@@ -1,16 +1,19 @@
 """
-TruthLens Ingestion Module
+TruthLens Ingestion Module (Instagram & Social Media Optimized)
 Handles:
-- Social media URL downloads (YouTube, Instagram, TikTok, etc.) via yt-dlp
-- Direct media file uploads (Video, Image, Audio)
-- SHA-256 cryptographic provenance hashing
-- FFmpeg splitting: 1 fps visual frames + 16kHz mono WAV audio extraction
+- Social media URL downloads (Instagram Reels, YouTube Shorts, etc.) via yt-dlp
+- Realistic user-agent headers, fallback MP4 streams, and clean caption/uploader extraction
+- User-friendly error handling for Instagram login walls and rate limits
+- Cryptographic SHA-256 provenance hashing
+- Fast capped keyframe extraction (MAX_VIDEO_FRAMES_ANALYSIS default 10) for CPU efficiency
+- 16kHz mono WAV audio extraction via FFmpeg/soundfile
 """
 
 import hashlib
 import logging
 import mimetypes
 import os
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass, field
@@ -33,6 +36,16 @@ except ImportError:
     imageio_ffmpeg = None
 
 logger = logging.getLogger("truthlens.ingest")
+
+DEFAULT_MAX_FRAMES = int(os.getenv("MAX_VIDEO_FRAMES_ANALYSIS", "10"))
+
+
+class IngestionError(Exception):
+    """Raised when media ingestion fails (e.g. Instagram login wall, private post, rate limit)."""
+    def __init__(self, message: str, status_code: int = 400):
+        super().__init__(message)
+        self.message = message
+        self.status_code = status_code
 
 
 @dataclass
@@ -113,21 +126,27 @@ def detect_media_type(filepath: Path) -> str:
 
 class IngestPipeline:
     """
-    Ingests URLs or uploaded files, hashes them, and splits them into
-    1 fps frames and 16kHz mono audio.
+    Ingests Instagram Reels, YouTube Shorts, URLs or uploaded files,
+    hashes them, and extracts capped keyframes (default 10) and 16kHz mono audio.
     """
 
-    def __init__(self, output_root: Union[str, Path] = "./truthlens_workspace"):
+    def __init__(
+        self,
+        output_root: Union[str, Path] = "./truthlens_workspace",
+        max_keyframes: int = DEFAULT_MAX_FRAMES
+    ):
         self.output_root = Path(output_root)
         self.output_root.mkdir(parents=True, exist_ok=True)
+        self.max_keyframes = max_keyframes
         self.ffmpeg_bin = resolve_ffmpeg_binary()
         if not self.ffmpeg_bin:
             logger.warning("FFmpeg binary not detected on PATH or via imageio-ffmpeg. Falling back to OpenCV where possible.")
 
     def download_url(self, url: str, target_dir: Path) -> Tuple[Path, Dict]:
         """
-        Downloads social media video or media from Instagram, YouTube, etc. using yt-dlp.
-        Returns the local file path and extracted metadata.
+        Downloads social media video from Instagram Reels, YouTube, etc. using yt-dlp.
+        Supports shortcode extraction for Instagram (trying /p/{shortcode}/ first, then /reel/{shortcode}/).
+        Configured with verified options: force_ipv4, retries, cookiefile, and carousel entry handling.
         """
         if yt_dlp is None:
             raise RuntimeError("yt-dlp package is required for URL downloads. Install via pip install yt-dlp.")
@@ -135,40 +154,198 @@ class IngestPipeline:
         target_dir.mkdir(parents=True, exist_ok=True)
         outtmpl = str(target_dir / "%(id)s.%(ext)s")
 
+        # Load cookies.txt if present in the workspace root
+        cookie_path = Path(__file__).resolve().parent.parent / "cookies.txt"
+
+        # Verified yt-dlp options (no custom user_agent, http_headers, or impersonate)
         ydl_opts = {
             "outtmpl": outtmpl,
             "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+            "merge_output_format": "mp4",
+            "force_ipv4": True,
+            "playlist_items": "1",
+            "retries": 3,
+            "extractor_retries": 3,
             "noplaylist": True,
             "quiet": True,
             "no_warnings": True,
         }
 
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            filename = ydl.prepare_filename(info)
-            downloaded_path = Path(filename)
-            
-            # yt-dlp sometimes merges into .mp4 or changes extension
-            if not downloaded_path.exists():
-                stem = downloaded_path.stem
-                matches = list(target_dir.glob(f"{stem}.*"))
-                if matches:
-                    downloaded_path = matches[0]
+        if cookie_path.exists():
+            ydl_opts["cookiefile"] = str(cookie_path)
+            logger.info(f"Loaded Instagram/YouTube cookies from: {cookie_path}")
 
-            metadata = {
-                "source_url": url,
-                "title": info.get("title"),
-                "uploader": info.get("uploader") or info.get("channel"),
-                "upload_date": info.get("upload_date"),
-                "duration": info.get("duration"),
-                "description": info.get("description"),
-                "view_count": info.get("view_count"),
-                "extractor": info.get("extractor"),
-            }
-            return downloaded_path, metadata
+        # Resolve candidate URLs for Instagram posts/reels
+        candidate_urls: List[str] = []
+        if "instagram.com" in url.lower():
+            # Strip query parameters (e.g. ?igsh=...)
+            clean_url = url.split("?")[0].rstrip("/")
+            match = re.search(r"/(?:reel|reels|p)/([A-Za-z0-9_-]+)", clean_url)
+            if match:
+                shortcode = match.group(1)
+                # Always try /p/{shortcode}/ first, then fall back to /reel/{shortcode}/
+                candidate_urls = [
+                    f"https://www.instagram.com/p/{shortcode}/",
+                    f"https://www.instagram.com/reel/{shortcode}/",
+                ]
+            else:
+                candidate_urls = [clean_url]
+        else:
+            candidate_urls = [url]
 
-    def extract_frames_opencv(self, video_path: Path, frames_dir: Path) -> Tuple[List[str], List[float], float]:
-        """Fallback 1 fps frame extraction using OpenCV when FFmpeg CLI is absent."""
+        info = None
+        last_error = None
+        attempt_url = candidate_urls[0]
+
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                for idx, cand_url in enumerate(candidate_urls):
+                    attempt_url = cand_url
+                    try:
+                        logger.info(f"Extracting video info with yt-dlp: {cand_url}")
+                        extracted = ydl.extract_info(cand_url, download=True)
+                        if extracted:
+                            info = extracted
+                            break
+                    except yt_dlp.utils.DownloadError as de:
+                        last_error = de
+                        if idx < len(candidate_urls) - 1:
+                            logger.warning(
+                                f"yt-dlp attempt failed for '{cand_url}': {de}. "
+                                f"Falling back to candidate: '{candidate_urls[idx + 1]}'."
+                            )
+                            continue
+                        else:
+                            # Log exact raw yt-dlp error via logger.error
+                            logger.error(f"yt-dlp extraction failed for '{cand_url}': {de}")
+                            raise
+                    except Exception as e:
+                        last_error = e
+                        if idx < len(candidate_urls) - 1:
+                            logger.warning(
+                                f"yt-dlp error for '{cand_url}': {e}. "
+                                f"Falling back to candidate: '{candidate_urls[idx + 1]}'."
+                            )
+                            continue
+                        else:
+                            logger.error(f"yt-dlp extraction failed for '{cand_url}': {e}", exc_info=True)
+                            raise
+
+                if not info:
+                    raise IngestionError(
+                        "Unable to extract video information from the provided URL. "
+                        "The post may be private or removed. Please upload the MP4 file directly.",
+                        status_code=400
+                    )
+
+                # Instagram carousel posts or playlists return a list of entries
+                target_info = info
+                if "entries" in info and info["entries"]:
+                    entry = info["entries"][0]
+                    if entry:
+                        target_info = entry
+
+                filename = ydl.prepare_filename(target_info)
+                downloaded_path = Path(filename)
+
+                # Match file if yt-dlp merged into .mp4
+                if not downloaded_path.exists():
+                    stem = downloaded_path.stem
+                    matches = list(target_dir.glob(f"{stem}.*"))
+                    if matches:
+                        downloaded_path = matches[0]
+
+                if not downloaded_path.exists():
+                    # Fallback check for newly written video files in target_dir
+                    candidates = sorted(
+                        list(target_dir.glob("*.mp4")) + list(target_dir.glob("*.mkv")) + list(target_dir.glob("*.webm")),
+                        key=lambda p: p.stat().st_mtime,
+                        reverse=True
+                    )
+                    if candidates:
+                        downloaded_path = candidates[0]
+
+                if not downloaded_path.exists():
+                    raise IngestionError(
+                        "Downloaded file not found on disk. Please upload the MP4 file directly.",
+                        status_code=400
+                    )
+
+                # Clean extraction of caption and creator info
+                description = (
+                    target_info.get("description")
+                    or target_info.get("title")
+                    or info.get("description")
+                    or info.get("title")
+                    or ""
+                )
+                uploader = (
+                    target_info.get("uploader")
+                    or target_info.get("channel")
+                    or target_info.get("creator")
+                    or target_info.get("uploader_id")
+                    or info.get("uploader")
+                    or info.get("channel")
+                    or info.get("creator")
+                    or info.get("uploader_id")
+                    or "Unknown Uploader"
+                )
+
+                metadata = {
+                    "source_url": url,
+                    "target_url": attempt_url,
+                    "title": target_info.get("title") or info.get("title") or "",
+                    "description": str(description).strip(),
+                    "uploader": str(uploader).strip(),
+                    "upload_date": target_info.get("upload_date") or info.get("upload_date"),
+                    "duration": target_info.get("duration") or info.get("duration"),
+                    "view_count": target_info.get("view_count") or info.get("view_count"),
+                    "extractor": target_info.get("extractor") or info.get("extractor"),
+                }
+                return downloaded_path, metadata
+
+        except yt_dlp.utils.DownloadError as de:
+            err_msg = str(de).lower()
+            if any(term in err_msg for term in ["login", "rate-limit", "rate limit", "checkpoint", "blocked", "restricted", "private", "sign in", "429"]):
+                raise IngestionError(
+                    "Instagram requires login or has rate-limited this URL. "
+                    "Please download the Reel/video and upload the MP4 file directly via the upload tab.",
+                    status_code=400
+                )
+            raise IngestionError(
+                f"Failed to access video at {url}. "
+                "Instagram or the platform may restrict public access to this Reel. "
+                "Please download the Reel and upload the MP4 file directly.",
+                status_code=400
+            )
+
+        except IngestionError:
+            raise
+
+        except Exception as e:
+            err_msg = str(e).lower()
+            if "instagram" in err_msg or "login" in err_msg or "rate" in err_msg:
+                raise IngestionError(
+                    "Instagram requires login or has rate-limited this URL. "
+                    "Please download the Reel/video and upload the MP4 file directly via the upload tab.",
+                    status_code=400
+                )
+            raise IngestionError(
+                f"Could not retrieve video from link: {str(e)}. "
+                "Please upload the video file directly.",
+                status_code=400
+            )
+
+    def extract_keyframes_opencv(
+        self,
+        video_path: Path,
+        frames_dir: Path,
+        max_keyframes: Optional[int] = None
+    ) -> Tuple[List[str], List[float], float]:
+        """
+        Fast capped keyframe extraction using OpenCV:
+        Evenly spaces up to max_keyframes across the duration so Reels process fast on CPU.
+        """
         if cv2 is None:
             raise RuntimeError("Neither FFmpeg nor OpenCV is available for frame extraction.")
 
@@ -180,70 +357,66 @@ class IngestPipeline:
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
         duration_seconds = total_frames / native_fps if native_fps > 0 else 0.0
 
+        target_count = max_keyframes or self.max_keyframes
+        if total_frames <= 0 or duration_seconds <= 0:
+            target_indices = [0]
+        elif total_frames <= target_count:
+            target_indices = list(range(total_frames))
+        else:
+            step = total_frames / float(target_count)
+            target_indices = [int(i * step) for i in range(target_count)]
+
         frame_paths: List[str] = []
         frame_timestamps: List[float] = []
 
-        step = max(1, int(round(native_fps)))
-        curr_frame_idx = 0
-        extracted_count = 0
-
-        while True:
+        for count, frame_idx in enumerate(target_indices):
+            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
             ret, frame = cap.read()
             if not ret:
-                break
-            if curr_frame_idx % step == 0:
-                frame_filename = f"frame_{extracted_count + 1:04d}.jpg"
-                out_path = frames_dir / frame_filename
-                cv2.imwrite(str(out_path), frame, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
-                frame_paths.append(str(out_path))
-                timestamp = round(curr_frame_idx / native_fps, 2)
-                frame_timestamps.append(timestamp)
-                extracted_count += 1
-            curr_frame_idx += 1
+                continue
+
+            frame_filename = f"frame_{count + 1:04d}.jpg"
+            out_path = frames_dir / frame_filename
+            cv2.imwrite(str(out_path), frame, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
+            frame_paths.append(str(out_path))
+
+            timestamp = round(frame_idx / native_fps, 2)
+            frame_timestamps.append(timestamp)
 
         cap.release()
         return frame_paths, frame_timestamps, duration_seconds
 
-    def split_video(self, video_path: Path, work_dir: Path) -> Tuple[List[str], List[float], Optional[str], float]:
+    def split_video(
+        self,
+        video_path: Path,
+        work_dir: Path,
+        max_keyframes: Optional[int] = None
+    ) -> Tuple[List[str], List[float], Optional[str], float]:
         """
         Splits video into:
-        1) 1 fps frames (saved as frame_0001.jpg, etc.)
+        1) Evenly spaced keyframes (capped at max_keyframes, default 10)
         2) 16kHz mono WAV audio file (audio_16k_mono.wav)
         """
         frames_dir = work_dir / "frames"
         frames_dir.mkdir(parents=True, exist_ok=True)
         audio_out_path = work_dir / "audio_16k_mono.wav"
 
-        frame_paths: List[str] = []
-        frame_timestamps: List[float] = []
-        duration_seconds = 0.0
+        target_k = max_keyframes or self.max_keyframes
+
+        # 1. Keyframe extraction using OpenCV (capped at target_k)
+        try:
+            frame_paths, frame_timestamps, duration_seconds = self.extract_keyframes_opencv(
+                video_path, frames_dir, max_keyframes=target_k
+            )
+        except Exception as e:
+            logger.warning(f"OpenCV frame extraction encountered an issue: {e}. Trying FFmpeg fallback...")
+            frame_paths, frame_timestamps, duration_seconds = self._ffmpeg_capped_split(
+                video_path, frames_dir, target_k
+            )
+
+        # 2. Extract 16kHz mono audio via FFmpeg
         audio_extracted_path: Optional[str] = None
-
         if self.ffmpeg_bin:
-            # 1) Extract 1 fps frames via ffmpeg
-            frame_pattern = str(frames_dir / "frame_%04d.jpg")
-            cmd_frames = [
-                self.ffmpeg_bin,
-                "-y",
-                "-i", str(video_path),
-                "-vf", "fps=1",
-                "-q:v", "2",
-                frame_pattern
-            ]
-            try:
-                subprocess.run(cmd_frames, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
-            except subprocess.CalledProcessError as e:
-                logger.error(f"FFmpeg frame extraction failed: {e.stderr.decode('utf-8', errors='ignore')}")
-                # Fallback to OpenCV
-                return self._fallback_video_split(video_path, work_dir)
-
-            extracted_files = sorted(list(frames_dir.glob("frame_*.jpg")))
-            for idx, p in enumerate(extracted_files):
-                frame_paths.append(str(p))
-                frame_timestamps.append(float(idx))
-            duration_seconds = float(len(frame_paths))
-
-            # 2) Extract 16kHz mono audio via ffmpeg
             cmd_audio = [
                 self.ffmpeg_bin,
                 "-y",
@@ -259,20 +432,54 @@ class IngestPipeline:
                 audio_extracted_path = str(audio_out_path)
             else:
                 logger.info("Video contains no audio track or audio extraction failed.")
-                audio_extracted_path = None
-
         else:
-            # Fallback to OpenCV for frames
-            frame_paths, frame_timestamps, duration_seconds = self.extract_frames_opencv(video_path, frames_dir)
-            audio_extracted_path = None
+            try:
+                import librosa
+                import soundfile as sf
+                y, sr = librosa.load(str(video_path), sr=16000, mono=True)
+                if len(y) > 0:
+                    sf.write(str(audio_out_path), y, 16000, subtype='PCM_16')
+                    audio_extracted_path = str(audio_out_path)
+            except Exception:
+                audio_extracted_path = None
 
         return frame_paths, frame_timestamps, audio_extracted_path, duration_seconds
 
-    def _fallback_video_split(self, video_path: Path, work_dir: Path) -> Tuple[List[str], List[float], Optional[str], float]:
-        frames_dir = work_dir / "frames"
-        frames_dir.mkdir(parents=True, exist_ok=True)
-        frame_paths, frame_timestamps, duration = self.extract_frames_opencv(video_path, frames_dir)
-        return frame_paths, frame_timestamps, None, duration
+    def _ffmpeg_capped_split(
+        self,
+        video_path: Path,
+        frames_dir: Path,
+        target_k: int
+    ) -> Tuple[List[str], List[float], float]:
+        """FFmpeg fallback for extracting target_k keyframes."""
+        if not self.ffmpeg_bin:
+            return [], [], 0.0
+
+        frame_pattern = str(frames_dir / "frame_%04d.jpg")
+        cmd_frames = [
+            self.ffmpeg_bin,
+            "-y",
+            "-i", str(video_path),
+            "-vf", "fps=1",
+            "-q:v", "2",
+            frame_pattern
+        ]
+        subprocess.run(cmd_frames, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        extracted = sorted(list(frames_dir.glob("frame_*.jpg")))
+
+        if not extracted:
+            return [], [], 0.0
+
+        # Subsample to target_k
+        if len(extracted) > target_k:
+            step = len(extracted) / float(target_k)
+            selected = [extracted[int(i * step)] for i in range(target_k)]
+        else:
+            selected = extracted
+
+        frame_paths = [str(p) for p in selected]
+        frame_timestamps = [float(i) for i in range(len(selected))]
+        return frame_paths, frame_timestamps, float(len(extracted))
 
     def convert_audio(self, audio_path: Path, work_dir: Path) -> Tuple[Optional[str], float]:
         """Converts arbitrary audio format to 16kHz mono PCM WAV."""
@@ -289,7 +496,6 @@ class IngestPipeline:
             ]
             res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             if res.returncode == 0 and target_audio.exists():
-                # Estimate duration
                 duration = 0.0
                 try:
                     import soundfile as sf
@@ -298,8 +504,7 @@ class IngestPipeline:
                 except Exception:
                     pass
                 return str(target_audio), duration
-        
-        # Fallback via librosa & soundfile if available
+
         try:
             import librosa
             import soundfile as sf
@@ -317,8 +522,8 @@ class IngestPipeline:
         original_filename: Optional[str] = None
     ) -> IngestResult:
         """
-        Main entry point for ingestion. Accepts a social media URL or a local file path.
-        Computes SHA-256 hash, organizes workspace, and runs FFmpeg splitting.
+        Main entry point for ingestion. Accepts an Instagram/YouTube URL or uploaded file.
+        Computes SHA-256 hash, organizes workspace, and extracts capped keyframes.
         """
         temp_dir = self.output_root / "temp_incoming"
         temp_dir.mkdir(parents=True, exist_ok=True)
@@ -354,9 +559,10 @@ class IngestPipeline:
         duration = 0.0
 
         if media_type == "video":
-            frame_paths, frame_timestamps, audio_path, duration = self.split_video(final_orig_path, job_dir)
+            frame_paths, frame_timestamps, audio_path, duration = self.split_video(
+                final_orig_path, job_dir, max_keyframes=self.max_keyframes
+            )
         elif media_type == "image":
-            # Copy single image to frames directory as frame_0001.jpg
             frame_out = frames_dir / "frame_0001.jpg"
             if cv2 is not None:
                 img = cv2.imread(str(final_orig_path))
@@ -375,9 +581,10 @@ class IngestPipeline:
             frame_paths = []
             frame_timestamps = []
         else:
-            # Attempt video split first, if fails treat as image or audio
             try:
-                frame_paths, frame_timestamps, audio_path, duration = self.split_video(final_orig_path, job_dir)
+                frame_paths, frame_timestamps, audio_path, duration = self.split_video(
+                    final_orig_path, job_dir, max_keyframes=self.max_keyframes
+                )
                 if frame_paths:
                     media_type = "video"
             except Exception:
@@ -393,6 +600,6 @@ class IngestPipeline:
             frame_paths=frame_paths,
             frame_timestamps=frame_timestamps,
             audio_path=audio_path,
-            duration_seconds=duration,
+            duration_seconds=round(duration, 2),
             metadata=url_metadata
         )

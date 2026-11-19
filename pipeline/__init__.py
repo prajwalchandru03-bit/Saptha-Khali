@@ -2,7 +2,7 @@
 TruthLens Multimodal Forensic Pipeline
 """
 
-from pipeline.ingest import IngestPipeline, IngestResult, compute_sha256
+from pipeline.ingest import IngestPipeline, IngestResult, IngestionError, compute_sha256
 from pipeline.visual import (
     VisualAnalyzer,
     VisualForensicsResult,
@@ -28,12 +28,16 @@ from pipeline.correlator import (
     ForensicReport,
     FlaggedEvidenceItem,
     CrossModalFindings,
-    ConfidenceLevel
+    ConfidenceLevel,
+    AssessmentItem,
+    AssessmentLevel,
+    MediaOriginAssessment
 )
 
 __all__ = [
     "IngestPipeline",
     "IngestResult",
+    "IngestionError",
     "compute_sha256",
     "VisualAnalyzer",
     "VisualForensicsResult",
@@ -54,4 +58,7 @@ __all__ = [
     "FlaggedEvidenceItem",
     "CrossModalFindings",
     "ConfidenceLevel",
+    "AssessmentItem",
+    "AssessmentLevel",
+    "MediaOriginAssessment",
 ]

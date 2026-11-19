@@ -1,9 +1,11 @@
 """
-TruthLens Audio Forensics Module
+TruthLens Audio Forensics Module (Optimized for Reels & Social Video)
 Handles:
-1) 4-second audio window chunking at 16kHz mono
+1) Active speech segment isolation (ignoring pure silence for accurate voice clone detection)
 2) Synthetic Voice Clone / Deepfake Audio Detection (HyperMoon/wav2vec2-base-960h-finetuned-deepfake)
-3) Whisper 'base' model timestamped speech transcription
+3) Timestamped synthetic voice clone spike tracking
+4) Background music interference detection
+5) Whisper 'base' timestamped speech transcription
 """
 
 import logging
@@ -25,6 +27,9 @@ except ImportError:
 
 logger = logging.getLogger("truthlens.audio")
 
+# Speech threshold for 16kHz audio: RMS amplitude below 0.005 is treated as non-speech silence
+SPEECH_RMS_THRESHOLD = 0.005
+
 
 @dataclass
 class AudioChunkResult:
@@ -35,6 +40,8 @@ class AudioChunkResult:
     fake_score: float
     real_score: float
     predicted_label: str
+    is_speech: bool = True
+    rms_energy: float = 0.0
 
 
 @dataclass
@@ -53,8 +60,13 @@ class AudioForensicsResult:
     average_voice_clone_score: float
     peak_voice_clone_score: float
     is_flagged_voice_clone: bool
-    detected_language: Optional[str]
-    full_transcript: str
+    speech_chunks_analyzed: int = 0
+    silent_chunks_skipped: int = 0
+    synthetic_voice_spikes: List[Dict[str, Union[float, str]]] = field(default_factory=list)
+    background_music_detected: bool = False
+    music_interference_note: Optional[str] = None
+    detected_language: Optional[str] = None
+    full_transcript: str = ""
     transcript_segments: List[TranscriptSegment] = field(default_factory=list)
     chunk_results: List[AudioChunkResult] = field(default_factory=list)
     top_flagged_chunks: List[AudioChunkResult] = field(default_factory=list)
@@ -102,7 +114,7 @@ class Wav2Vec2DeepfakeDetector:
 
     def predict_chunk(self, audio_data: np.ndarray, sampling_rate: int = 16000) -> Tuple[float, float, str]:
         """
-        Runs voice clone detection on a single audio chunk.
+        Runs voice clone detection on a single active speech chunk.
         Returns (fake_score, real_score, label).
         """
         if not self._is_loaded and self._load_error is None:
@@ -113,7 +125,6 @@ class Wav2Vec2DeepfakeDetector:
 
         import torch
 
-        # Ensure audio is 1D float32
         audio_arr = np.squeeze(audio_data).astype(np.float32)
 
         inputs = self.feature_extractor(
@@ -142,13 +153,12 @@ class Wav2Vec2DeepfakeDetector:
             elif "real" in lbl or "bonafide" in lbl or "genuine" in lbl:
                 real_prob = float(prob)
 
-        # In case labels are not named 'fake'/'real', default 1 is fake, 0 is real
         if fake_prob == 0.0 and real_prob == 0.0 and len(probs) >= 2:
             fake_prob = float(probs[1])
             real_prob = float(probs[0])
 
         predicted_label = "Deepfake / Voice Clone" if fake_prob > real_prob else "Authentic Voice"
-        return fake_prob, real_prob, predicted_label
+        return round(fake_prob, 4), round(real_prob, 4), predicted_label
 
 
 class WhisperTranscriber:
@@ -163,7 +173,7 @@ class WhisperTranscriber:
         self.model = None
         self._is_loaded = False
         self._load_error = None
-        self._backend = None  # "openai-whisper" or "transformers"
+        self._backend = None
 
     @classmethod
     def get_instance(cls, device: str = "cpu"):
@@ -174,8 +184,7 @@ class WhisperTranscriber:
     def load_model(self):
         if self._is_loaded:
             return
-        
-        # Try native openai-whisper
+
         try:
             import whisper
             logger.info("Loading native openai-whisper 'base' model...")
@@ -187,7 +196,6 @@ class WhisperTranscriber:
         except Exception as e:
             logger.debug(f"Native whisper import/load failed: {e}. Trying transformers pipeline...")
 
-        # Fallback to transformers Whisper pipeline
         try:
             from transformers import pipeline
             logger.info("Loading transformers openai/whisper-base pipeline...")
@@ -255,8 +263,8 @@ class WhisperTranscriber:
 
 class AudioAnalyzer:
     """
-    Orchestrates 4-second chunking, voice clone detection,
-    and Whisper timestamped speech transcription.
+    Orchestrates active speech chunking, voice clone detection,
+    background music detection, and Whisper speech transcription.
     """
 
     def __init__(self, device: str = "cpu"):
@@ -285,15 +293,49 @@ class AudioAnalyzer:
 
         raise RuntimeError("Neither soundfile nor librosa is available to read audio.")
 
+    def detect_background_music(self, signal: np.ndarray, sr: int = 16000) -> Tuple[bool, Optional[str]]:
+        """
+        Detects prominent background music that might reduce voice clone detector accuracy.
+        Uses spectral flatness and harmonic-to-percussive energy ratio.
+        """
+        if len(signal) == 0:
+            return False, None
+
+        if librosa is not None:
+            try:
+                # Sample up to 10 seconds for speed
+                test_sig = signal[:min(len(signal), sr * 10)]
+                # Harmonic vs percussive separation
+                y_harmonic, y_percussive = librosa.effects.hpss(test_sig)
+                harmonic_energy = float(np.sum(y_harmonic ** 2))
+                total_energy = float(np.sum(test_sig ** 2)) + 1e-6
+                harmonic_ratio = harmonic_energy / total_energy
+
+                # Spectral flatness measures noise vs tonality/music
+                flatness = float(np.mean(librosa.feature.spectral_flatness(y=test_sig)))
+
+                # Strong musical tonality yields higher harmonic ratio and lower spectral flatness
+                if harmonic_ratio > 0.65 and flatness < 0.05:
+                    note = (
+                        "Prominent background music detected across audio track, "
+                        "which can suppress vocal micro-features and reduce voice clone classifier certainty."
+                    )
+                    return True, note
+            except Exception as e:
+                logger.debug(f"Music detection error: {e}")
+
+        return False, None
+
     def chunk_audio(
         self,
         audio_data: np.ndarray,
         sr: int = 16000,
         chunk_duration_sec: float = 4.0
-    ) -> List[Tuple[np.ndarray, float, float]]:
+    ) -> List[Tuple[np.ndarray, float, float, float, bool]]:
         """
         Splits audio signal into 4.0-second non-overlapping windows.
-        Returns list of (chunk_samples, start_time, end_time).
+        Measures RMS energy for each chunk to isolate active speech from silence.
+        Returns list of (chunk_samples, start_time, end_time, rms_energy, is_speech).
         """
         chunk_samples = int(chunk_duration_sec * sr)
         total_samples = len(audio_data)
@@ -301,7 +343,7 @@ class AudioAnalyzer:
         if total_samples == 0:
             return []
 
-        chunks: List[Tuple[np.ndarray, float, float]] = []
+        chunks: List[Tuple[np.ndarray, float, float, float, bool]] = []
         num_chunks = int(np.ceil(total_samples / chunk_samples))
 
         for i in range(num_chunks):
@@ -309,7 +351,10 @@ class AudioAnalyzer:
             end_idx = min((i + 1) * chunk_samples, total_samples)
             slice_data = audio_data[start_idx:end_idx]
 
-            # Pad short chunks with zeros to maintain 4-sec dimension
+            # Measure RMS energy
+            rms = float(np.sqrt(np.mean(slice_data ** 2))) if len(slice_data) > 0 else 0.0
+            is_speech = rms >= SPEECH_RMS_THRESHOLD
+
             if len(slice_data) < chunk_samples:
                 padded = np.zeros(chunk_samples, dtype=np.float32)
                 padded[:len(slice_data)] = slice_data
@@ -317,16 +362,18 @@ class AudioAnalyzer:
 
             start_t = round(start_idx / sr, 2)
             end_t = round(end_idx / sr, 2)
-            chunks.append((slice_data, start_t, end_t))
+            chunks.append((slice_data, start_t, end_t, rms, is_speech))
 
         return chunks
 
     def analyze(self, audio_path: Optional[str]) -> AudioForensicsResult:
         """
         Executes complete audio forensics:
-        1. 4-second chunking
-        2. Wav2Vec2 voice clone detection per chunk
-        3. Whisper 'base' timestamped transcription
+        1. Audio loading & background music detection
+        2. Active speech chunking (ignoring pure silence)
+        3. Wav2Vec2 voice clone detection on active speech
+        4. Timestamped synthetic voice clone spike tracking
+        5. Whisper 'base' timestamped transcription
         """
         if not audio_path or not Path(audio_path).exists():
             return AudioForensicsResult(
@@ -335,6 +382,11 @@ class AudioAnalyzer:
                 average_voice_clone_score=0.0,
                 peak_voice_clone_score=0.0,
                 is_flagged_voice_clone=False,
+                speech_chunks_analyzed=0,
+                silent_chunks_skipped=0,
+                synthetic_voice_spikes=[],
+                background_music_detected=False,
+                music_interference_note=None,
                 detected_language=None,
                 full_transcript="No audio stream detected in media file.",
                 transcript_segments=[],
@@ -342,7 +394,6 @@ class AudioAnalyzer:
                 top_flagged_chunks=[]
             )
 
-        # 1. Load audio signal
         try:
             signal, duration = self.load_audio_signal(audio_path, target_sr=16000)
         except Exception as e:
@@ -353,6 +404,11 @@ class AudioAnalyzer:
                 average_voice_clone_score=0.0,
                 peak_voice_clone_score=0.0,
                 is_flagged_voice_clone=False,
+                speech_chunks_analyzed=0,
+                silent_chunks_skipped=0,
+                synthetic_voice_spikes=[],
+                background_music_detected=False,
+                music_interference_note=None,
                 detected_language=None,
                 full_transcript=f"Audio decoding failure: {e}",
                 transcript_segments=[],
@@ -360,26 +416,63 @@ class AudioAnalyzer:
                 top_flagged_chunks=[]
             )
 
-        # 2. Slice into 4-sec audio chunks and run Wav2Vec2 detector
+        # Detect background music
+        music_detected, music_note = self.detect_background_music(signal, sr=16000)
+
+        # Chunk audio with VAD/RMS speech filtering
         chunks = self.chunk_audio(signal, sr=16000, chunk_duration_sec=4.0)
         chunk_results: List[AudioChunkResult] = []
+        speech_chunks = 0
+        silent_chunks = 0
+        spikes: List[Dict[str, Union[float, str]]] = []
 
-        for idx, (chunk_data, start_sec, end_sec) in enumerate(chunks):
-            fake_s, real_s, label = self.detector.predict_chunk(chunk_data, sampling_rate=16000)
-            chunk_results.append(AudioChunkResult(
-                chunk_index=idx,
-                start_seconds=start_sec,
-                end_seconds=end_sec,
-                fake_score=round(fake_s, 4),
-                real_score=round(real_s, 4),
-                predicted_label=label
-            ))
+        active_fake_scores: List[float] = []
 
-        if chunk_results:
-            avg_fake = sum(c.fake_score for c in chunk_results) / len(chunk_results)
-            peak_fake = max(c.fake_score for c in chunk_results)
+        for idx, (chunk_data, start_sec, end_sec, rms_val, is_speech) in enumerate(chunks):
+            if not is_speech:
+                # Pure silence or low-level background noise: do not run voice clone classifier
+                silent_chunks += 1
+                chunk_results.append(AudioChunkResult(
+                    chunk_index=idx,
+                    start_seconds=start_sec,
+                    end_seconds=end_sec,
+                    fake_score=0.0,
+                    real_score=1.0,
+                    predicted_label="Ambient / Non-Speech Silence",
+                    is_speech=False,
+                    rms_energy=round(rms_val, 4)
+                ))
+            else:
+                speech_chunks += 1
+                fake_s, real_s, label = self.detector.predict_chunk(chunk_data, sampling_rate=16000)
+                active_fake_scores.append(fake_s)
+
+                chunk_results.append(AudioChunkResult(
+                    chunk_index=idx,
+                    start_seconds=start_sec,
+                    end_seconds=end_sec,
+                    fake_score=fake_s,
+                    real_score=real_s,
+                    predicted_label=label,
+                    is_speech=True,
+                    rms_energy=round(rms_val, 4)
+                ))
+
+                # Track synthetic voice clone spike if score >= 0.65
+                if fake_s >= 0.65:
+                    spikes.append({
+                        "start_seconds": start_sec,
+                        "end_seconds": end_sec,
+                        "timestamp_range": f"{start_sec:.1f}s - {end_sec:.1f}s",
+                        "fake_score": fake_s,
+                        "description": f"Synthetic voice clone spike (confidence {fake_s:.2f}) at [{start_sec:.1f}s - {end_sec:.1f}s]"
+                    })
+
+        if active_fake_scores:
+            avg_fake = float(np.mean(active_fake_scores))
+            peak_fake = float(max(active_fake_scores))
             sorted_flagged = sorted(
-                [c for c in chunk_results if c.fake_score > 0.45],
+                [c for c in chunk_results if c.is_speech and c.fake_score > 0.45],
                 key=lambda x: x.fake_score,
                 reverse=True
             )
@@ -389,9 +482,9 @@ class AudioAnalyzer:
             peak_fake = 0.0
             top_flagged = []
 
-        is_flagged = avg_fake >= 0.5 or peak_fake >= 0.75
+        is_flagged = avg_fake >= 0.50 or peak_fake >= 0.70
 
-        # 3. Whisper 'base' timestamped transcription
+        # Whisper speech transcription
         full_transcript, language, segments = self.transcriber.transcribe(audio_path)
 
         return AudioForensicsResult(
@@ -400,6 +493,11 @@ class AudioAnalyzer:
             average_voice_clone_score=round(avg_fake, 4),
             peak_voice_clone_score=round(peak_fake, 4),
             is_flagged_voice_clone=is_flagged,
+            speech_chunks_analyzed=speech_chunks,
+            silent_chunks_skipped=silent_chunks,
+            synthetic_voice_spikes=spikes,
+            background_music_detected=music_detected,
+            music_interference_note=music_note,
             detected_language=language,
             full_transcript=full_transcript,
             transcript_segments=segments,

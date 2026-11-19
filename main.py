@@ -1,20 +1,22 @@
 """
 TruthLens: Multimodal Digital Forensics & Deepfake Detection Backend
 FastAPI server orchestrating ingestion, visual forensics, audio forensics,
-cross-modal consistency checks, and Gemini forensic correlation.
+cross-modal consistency checks, Gemini forensic correlation, and incident reporting.
+Serves web dashboard at GET / (static/index.html).
 """
 
 import json
 import logging
 import os
 import shutil
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -25,6 +27,7 @@ from pipeline import (
     CrossModalAnalyzer,
     ForensicReport,
     IngestPipeline,
+    IngestionError,
     VisualAnalyzer,
 )
 
@@ -39,29 +42,38 @@ logging.basicConfig(
 logger = logging.getLogger("truthlens.server")
 
 # Paths and environment settings
+BASE_DIR = Path(__file__).resolve().parent
+STATIC_DIR = BASE_DIR / "static"
+STATIC_DIR.mkdir(parents=True, exist_ok=True)
+
 OUTPUT_DIR = Path(os.getenv("OUTPUT_DIR", "./truthlens_workspace")).resolve()
 TEMP_DIR = Path(os.getenv("TEMP_DIR", "./tmp")).resolve()
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 TEMP_DIR.mkdir(parents=True, exist_ok=True)
 
+INCIDENTS_FILE = OUTPUT_DIR / "reported_incidents.json"
+if not INCIDENTS_FILE.exists():
+    with open(INCIDENTS_FILE, "w", encoding="utf-8") as f:
+        json.dump([], f)
+
 DEVICE = os.getenv("DEVICE", "cpu")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
-MAX_FRAMES = int(os.getenv("MAX_VIDEO_FRAMES_ANALYSIS", "30"))
+MAX_FRAMES = int(os.getenv("MAX_VIDEO_FRAMES_ANALYSIS", "10"))
 
 # Initialize FastAPI application
 app = FastAPI(
     title="TruthLens Multimodal Forensic Backend",
     description=(
         "Forensic analysis and deepfake detection engine for social media posts "
-        "(YouTube/Instagram URLs or uploaded media). Evaluates visual frames, "
-        "audio voice clones, lip-sync dynamics, CLIP caption alignment, and scene consistency, "
-        "synthesized via Google Gemini API into a strict forensic report."
+        "(Instagram Reels, YouTube Shorts, or uploaded pictures/videos). "
+        "Evaluates facial manipulation, AI-generated video cues, audio voice clones, "
+        "lip-sync dynamics, and CLIP caption alignment, synthesized into a strict forensic report."
     ),
-    version="1.0.0",
+    version="1.2.0",
 )
 
-# Configure CORS for dashboard and web extension access
+# Configure CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -70,12 +82,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Mount static files directory for inspecting ELA heatmaps, frames, and extracted audio
+# Mount static files and artifacts
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 app.mount("/artifacts", StaticFiles(directory=str(OUTPUT_DIR)), name="artifacts")
 
 # Initialize Pipeline Singletons
 logger.info("Initializing TruthLens Forensics Pipelines...")
-ingest_pipeline = IngestPipeline(output_root=OUTPUT_DIR)
+ingest_pipeline = IngestPipeline(output_root=OUTPUT_DIR, max_keyframes=MAX_FRAMES)
 visual_analyzer = VisualAnalyzer(device=DEVICE)
 audio_analyzer = AudioAnalyzer(device=DEVICE)
 cross_modal_analyzer = CrossModalAnalyzer(device=DEVICE)
@@ -98,6 +111,7 @@ class ArtifactUrls(BaseModel):
     ela_heatmap: Optional[str] = None
     audio_wav: Optional[str] = None
     flagged_frames: List[str] = Field(default_factory=list)
+    face_crops: List[str] = Field(default_factory=list)
 
 
 class FullAnalysisResponse(BaseModel):
@@ -106,6 +120,29 @@ class FullAnalysisResponse(BaseModel):
     report: ForensicReport
     artifacts: ArtifactUrls
     pipeline_telemetry: Dict[str, Any]
+
+
+class IncidentReportRequest(BaseModel):
+    """Payload to log a human-confirmed deepfake incident."""
+    sha256_hash: str
+    source_identifier: str
+    manipulation_type: str
+    takedown_report_text: str
+    investigator_notes: Optional[str] = None
+    platform: Optional[str] = "Instagram"
+
+
+class IncidentRecord(BaseModel):
+    """Persisted incident report record."""
+    ticket_id: str
+    timestamp: str
+    sha256_hash: str
+    source_identifier: str
+    manipulation_type: str
+    takedown_report_text: str
+    investigator_notes: Optional[str] = None
+    platform: str
+    status: str = "Logged / Ready for Takedown Submission"
 
 
 # ------------------------------------------------------------------------------
@@ -119,12 +156,12 @@ def run_multimodal_analysis(
     original_filename: Optional[str] = None
 ) -> FullAnalysisResponse:
     """
-    Executes the end-to-end multimodal pipeline:
-    1. Ingestion: Download/upload + SHA-256 + FFmpeg 1 fps split & 16kHz audio
-    2. Visual Forensics: EXIF + ELA Heatmap PNG + ViT Deepfake detection
-    3. Audio Forensics: 4-sec chunking + Wav2Vec2 voice clone + Whisper transcription
-    4. Cross-Modal Forensics: Lip-sync FaceMesh/RMS + CLIP caption match + Scene AST/CLIP
-    5. Gemini Correlation: Synthesizes strict Pydantic JSON report
+    Executes the multimodal pipeline:
+    1. Ingestion: Download/upload + SHA-256 + Capped keyframe split (default 10) & 16kHz audio
+    2. Visual Forensics: EXIF (platform aware) + ELA Heatmap PNG + Face Crop ViT + Full Frame ViT + Temporal Flicker
+    3. Audio Forensics: Active speech chunking + Wav2Vec2 clone spikes + Music check + Whisper transcription
+    4. Cross-Modal Forensics: Lip-sync & Dubbed Voice check + CLIP caption match + Scene AST/CLIP
+    5. Gemini Correlation: Synthesizes strict Pydantic JSON report with 3-way origin breakdown
     """
     logger.info(f"Starting analysis. Source: {source} (is_url={is_url})")
 
@@ -135,11 +172,13 @@ def run_multimodal_analysis(
         original_filename=original_filename
     )
 
+    is_picture = (ingest_res.media_type == "image")
+
     # Use caption from URL metadata if none was explicitly provided
     if not caption and ingest_res.metadata.get("description"):
         caption = ingest_res.metadata.get("description")
 
-    # Step 2: Visual Forensics
+    # Step 2: Visual Forensics (capped keyframes, cropped face evaluation, temporal flicker, ELA)
     visual_res = visual_analyzer.analyze(
         frame_paths=ingest_res.frame_paths,
         frame_timestamps=ingest_res.frame_timestamps,
@@ -147,10 +186,10 @@ def run_multimodal_analysis(
         max_frames=MAX_FRAMES
     )
 
-    # Step 3: Audio Forensics
+    # Step 3: Audio Forensics (gracefully handles pictures or audio-less media)
     audio_res = audio_analyzer.analyze(ingest_res.audio_path)
 
-    # Step 4: Cross-Modal Forensics
+    # Step 4: Cross-Modal Forensics (Lip-sync & Dubbed voice detection, CLIP caption similarity, AST scene tags)
     cross_modal_res = cross_modal_analyzer.analyze(
         frame_paths=ingest_res.frame_paths,
         frame_timestamps=ingest_res.frame_timestamps,
@@ -164,7 +203,8 @@ def run_multimodal_analysis(
         "duration_seconds": ingest_res.duration_seconds,
         "num_frames": len(ingest_res.frame_paths),
         "has_audio": bool(ingest_res.audio_path),
-        "metadata": ingest_res.metadata
+        "metadata": ingest_res.metadata,
+        "original_filename": ingest_res.original_filename
     }
 
     visual_dict = {
@@ -174,6 +214,7 @@ def run_multimodal_analysis(
             "camera_make": visual_res.exif_analysis.camera_make,
             "camera_model": visual_res.exif_analysis.camera_model,
             "suspicious_indicators": visual_res.exif_analysis.suspicious_indicators,
+            "platform_note": visual_res.exif_analysis.platform_note,
         },
         "ela_result": {
             "mean_error": visual_res.ela_result.mean_error if visual_res.ela_result else 0.0,
@@ -184,13 +225,24 @@ def run_multimodal_analysis(
         } if visual_res.ela_result else None,
         "average_fake_score": visual_res.average_fake_score,
         "peak_fake_score": visual_res.peak_fake_score,
+        "average_face_fake_score": visual_res.average_face_fake_score,
+        "peak_face_fake_score": visual_res.peak_face_fake_score,
+        "average_full_frame_fake_score": visual_res.average_full_frame_fake_score,
+        "temporal_flicker_score": visual_res.temporal_flicker_score,
+        "temporal_consistency_verdict": visual_res.temporal_consistency_verdict,
+        "ai_generated_video_indicators": visual_res.ai_generated_video_indicators,
         "is_flagged_deepfake": visual_res.is_flagged_deepfake,
+        "is_flagged_ai_video": visual_res.is_flagged_ai_video,
         "top_flagged_frames": [
             {
                 "frame_path": fp.frame_path,
                 "timestamp": fp.timestamp,
                 "fake_score": fp.fake_score,
-                "predicted_label": fp.predicted_label
+                "predicted_label": fp.predicted_label,
+                "face_detected": fp.face_detected,
+                "face_crop_path": fp.face_crop_path,
+                "face_fake_score": fp.face_fake_score,
+                "full_frame_fake_score": fp.full_frame_fake_score
             }
             for fp in visual_res.top_flagged_frames
         ]
@@ -202,20 +254,16 @@ def run_multimodal_analysis(
         "average_voice_clone_score": audio_res.average_voice_clone_score,
         "peak_voice_clone_score": audio_res.peak_voice_clone_score,
         "is_flagged_voice_clone": audio_res.is_flagged_voice_clone,
+        "speech_chunks_analyzed": audio_res.speech_chunks_analyzed,
+        "silent_chunks_skipped": audio_res.silent_chunks_skipped,
+        "synthetic_voice_spikes": audio_res.synthetic_voice_spikes,
+        "background_music_detected": audio_res.background_music_detected,
+        "music_interference_note": audio_res.music_interference_note,
         "detected_language": audio_res.detected_language,
         "full_transcript": audio_res.full_transcript,
         "transcript_segments": [
             {"start": s.start, "end": s.end, "text": s.text}
             for s in audio_res.transcript_segments[:15]
-        ],
-        "top_flagged_chunks": [
-            {
-                "start": c.start_seconds,
-                "end": c.end_seconds,
-                "fake_score": c.fake_score,
-                "label": c.predicted_label
-            }
-            for c in audio_res.top_flagged_chunks
         ]
     }
 
@@ -223,8 +271,12 @@ def run_multimodal_analysis(
         "lip_sync": {
             "correlation_score": cross_modal_res.lip_sync.correlation_score,
             "faces_detected": cross_modal_res.lip_sync.faces_detected,
+            "num_frames_with_face": cross_modal_res.lip_sync.num_frames_with_face,
             "verdict": cross_modal_res.lip_sync.verdict,
-            "explanation": cross_modal_res.lip_sync.explanation
+            "explanation": cross_modal_res.lip_sync.explanation,
+            "dubbed_voice_detected": cross_modal_res.lip_sync.dubbed_voice_detected,
+            "dubbing_scenario": cross_modal_res.lip_sync.dubbing_scenario,
+            "mismatch_ratio": cross_modal_res.lip_sync.mismatch_ratio
         },
         "caption_alignment": {
             "mean_similarity": cross_modal_res.caption_alignment.mean_similarity,
@@ -237,17 +289,20 @@ def run_multimodal_analysis(
             "top_audio_tags": cross_modal_res.scene_consistency.top_audio_tags,
             "mismatch_detected": cross_modal_res.scene_consistency.mismatch_detected,
             "mismatch_score": cross_modal_res.scene_consistency.mismatch_score,
-            "explanation": cross_modal_res.scene_consistency.explanation
+            "explanation": cross_modal_res.scene_consistency.explanation,
+            "music_detected": cross_modal_res.scene_consistency.music_detected
         },
         "is_cross_modal_anomaly_detected": cross_modal_res.is_cross_modal_anomaly_detected
     }
 
-    # Pass paths of top flagged frames to Gemini correlator for direct multimodal vision
+    # Pass paths of top flagged frames + cropped faces to Gemini for multimodal vision
     flagged_paths = [fp.frame_path for fp in visual_res.top_flagged_frames]
     if not flagged_paths and ingest_res.frame_paths:
         flagged_paths = [ingest_res.frame_paths[0]]
 
-    # Step 6: Invoke Gemini Correlator
+    ela_path = visual_res.ela_result.heatmap_path if visual_res.ela_result else None
+
+    # Step 6: Invoke Gemini Correlator (or rule-based fallback)
     report = correlator.generate_report(
         sha256_hash=ingest_res.sha256_hash,
         ingest_info=ingest_dict,
@@ -255,10 +310,12 @@ def run_multimodal_analysis(
         audio_info=audio_dict,
         cross_modal_info=cross_modal_dict,
         caption=caption,
-        flagged_frame_paths=flagged_paths
+        flagged_frame_paths=flagged_paths,
+        face_crop_paths=visual_res.face_crop_paths,
+        ela_heatmap_path=ela_path
     )
 
-    # Step 7: Persist Forensic Report JSON for evidence preservation
+    # Step 7: Persist Forensic Report JSON
     report_file = Path(ingest_res.work_dir) / "forensic_report.json"
     with open(report_file, "w", encoding="utf-8") as f:
         f.write(report.model_dump_json(indent=2))
@@ -271,11 +328,16 @@ def run_multimodal_analysis(
         f"/artifacts/{job_hash}/frames/{Path(fp.frame_path).name}"
         for fp in visual_res.top_flagged_frames
     ]
+    face_urls = [
+        f"/artifacts/{job_hash}/faces/{Path(fc).name}"
+        for fc in visual_res.face_crop_paths
+    ]
 
     artifacts = ArtifactUrls(
         ela_heatmap=ela_url,
         audio_wav=audio_url,
-        flagged_frames=frame_urls
+        flagged_frames=frame_urls,
+        face_crops=face_urls
     )
 
     telemetry = {
@@ -299,22 +361,17 @@ def run_multimodal_analysis(
 # API Endpoints
 # ------------------------------------------------------------------------------
 
-@app.get("/", tags=["Info"])
-def root_info():
-    """Returns TruthLens API overview and health information."""
+@app.get("/", tags=["Dashboard"])
+def serve_dashboard():
+    """Serves the complete TruthLens Web Dashboard at GET /."""
+    index_file = STATIC_DIR / "index.html"
+    if index_file.exists():
+        return FileResponse(index_file)
     return {
         "system": "TruthLens Multimodal Forensic Backend",
-        "version": "1.0.0",
+        "version": "1.2.0",
         "status": "Operational",
-        "documentation": "/docs",
-        "gemini_model": GEMINI_MODEL,
-        "device": DEVICE,
-        "endpoints": {
-            "analyze_url": "POST /analyze/url",
-            "analyze_upload": "POST /analyze/upload",
-            "get_report": "GET /reports/{sha256_hash}",
-            "health": "GET /health"
-        }
+        "documentation": "/docs"
     }
 
 
@@ -329,6 +386,7 @@ def health_check():
         "device": DEVICE,
         "gemini_api_key_configured": bool(GEMINI_API_KEY),
         "gemini_model": GEMINI_MODEL,
+        "max_video_frames_analysis": MAX_FRAMES,
         "ffmpeg_available": bool(ffmpeg_bin),
         "ffmpeg_path": ffmpeg_bin,
         "models": {
@@ -346,8 +404,9 @@ def health_check():
 @app.post("/analyze/url", response_model=FullAnalysisResponse, tags=["Forensics"])
 def analyze_social_media_url(request: URLAnalysisRequest):
     """
-    Ingests an Instagram or YouTube URL via yt-dlp, performs full multimodal
+    Ingests an Instagram Reel or YouTube video via yt-dlp, performs full multimodal
     digital forensic analysis, and correlates all signals with Gemini API.
+    Catches login walls / rate limits gracefully with user-friendly HTTP 400.
     """
     url = request.url.strip()
     if not url:
@@ -363,6 +422,14 @@ def analyze_social_media_url(request: URLAnalysisRequest):
             caption=request.caption
         )
         return response
+    except IngestionError as ie:
+        logger.warning(f"Ingestion rejected for URL '{url}': {ie.message}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=ie.message
+        )
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed analyzing URL '{url}': {e}", exc_info=True)
         raise HTTPException(
@@ -373,12 +440,12 @@ def analyze_social_media_url(request: URLAnalysisRequest):
 
 @app.post("/analyze/upload", response_model=FullAnalysisResponse, tags=["Forensics"])
 async def analyze_uploaded_file(
-    file: UploadFile = File(..., description="Uploaded video, image, or audio file"),
+    file: UploadFile = File(..., description="Uploaded video (.mp4, .mov, .webm), picture (.jpg, .png, .webp), or audio (.mp3, .wav)"),
     caption: Optional[str] = Form(default=None, description="Optional caption or post text to verify")
 ):
     """
     Uploads an image, video, or audio file, executes forensic pipeline,
-    and returns a strict Pydantic Forensic Report.
+    and returns a strict Pydantic Forensic Report with 3-way origin assessment.
     """
     if not file.filename:
         raise HTTPException(
@@ -398,6 +465,13 @@ async def analyze_uploaded_file(
             original_filename=file.filename
         )
         return response
+    except IngestionError as ie:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=ie.message
+        )
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed analyzing uploaded file '{file.filename}': {e}", exc_info=True)
         raise HTTPException(
@@ -405,7 +479,6 @@ async def analyze_uploaded_file(
             detail=f"Forensic analysis failed: {str(e)}"
         )
     finally:
-        # Cleanup temporary upload if copied
         if temp_save_path.exists():
             try:
                 temp_save_path.unlink()
@@ -437,6 +510,67 @@ def get_cached_report(sha256_hash: str):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error reading report: {str(e)}"
         )
+
+
+@app.post("/incidents/report", response_model=IncidentRecord, tags=["Incidents"])
+def report_deepfake_incident(request: IncidentReportRequest):
+    """
+    Saves a human-confirmed deepfake report to reported_incidents.json with a Ticket ID (e.g. TL-2026-001).
+    """
+    try:
+        incidents: List[Dict[str, Any]] = []
+        if INCIDENTS_FILE.exists():
+            with open(INCIDENTS_FILE, "r", encoding="utf-8") as f:
+                try:
+                    incidents = json.load(f)
+                except Exception:
+                    incidents = []
+
+        year = datetime.now().year
+        ticket_seq = len(incidents) + 1
+        ticket_id = f"TL-{year}-{ticket_seq:03d}"
+        iso_timestamp = datetime.now(timezone.utc).isoformat()
+
+        record = {
+            "ticket_id": ticket_id,
+            "timestamp": iso_timestamp,
+            "sha256_hash": request.sha256_hash,
+            "source_identifier": request.source_identifier,
+            "manipulation_type": request.manipulation_type,
+            "takedown_report_text": request.takedown_report_text,
+            "investigator_notes": request.investigator_notes,
+            "platform": request.platform or "Instagram",
+            "status": "Logged / Ready for Takedown Submission"
+        }
+
+        incidents.insert(0, record)  # most recent first
+
+        with open(INCIDENTS_FILE, "w", encoding="utf-8") as f:
+            json.dump(incidents, f, indent=2)
+
+        return IncidentRecord.model_validate(record)
+    except Exception as e:
+        logger.error(f"Failed logging incident report: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to record incident: {str(e)}"
+        )
+
+
+@app.get("/incidents", response_model=List[IncidentRecord], tags=["Incidents"])
+def list_reported_incidents():
+    """
+    Returns all logged human-confirmed deepfake incident reports.
+    """
+    if not INCIDENTS_FILE.exists():
+        return []
+    try:
+        with open(INCIDENTS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return [IncidentRecord.model_validate(item) for item in data]
+    except Exception as e:
+        logger.error(f"Error reading incidents: {e}")
+        return []
 
 
 if __name__ == "__main__":

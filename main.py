@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import shutil
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -20,6 +21,8 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+import numpy as np
+
 from pipeline import (
     AudioAnalyzer,
     ConfidenceLevel,
@@ -29,6 +32,12 @@ from pipeline import (
     IngestPipeline,
     IngestionError,
     VisualAnalyzer,
+    compare_media,
+    ComparisonResult,
+    investigation_assistant,
+    AssistantResponse,
+    analyze_text_forensics,
+    TextForensicsResult,
 )
 
 # Load environment configuration
@@ -59,6 +68,8 @@ if not INCIDENTS_FILE.exists():
 DEVICE = os.getenv("DEVICE", "cpu")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+if "3.8" in GEMINI_MODEL:
+    GEMINI_MODEL = "gemini-2.5-flash"
 MAX_FRAMES = int(os.getenv("MAX_VIDEO_FRAMES_ANALYSIS", "10"))
 
 # Initialize FastAPI application
@@ -143,6 +154,18 @@ class IncidentRecord(BaseModel):
     investigator_notes: Optional[str] = None
     platform: str
     status: str = "Logged / Ready for Takedown Submission"
+
+
+class AssistantRequest(BaseModel):
+    """Payload to question the grounded forensic AI assistant."""
+    investigation_id: str = Field(description="SHA-256 hash or investigation identifier")
+    question: str = Field(description="Investigator inquiry grounded in telemetry")
+    chat_history: Optional[List[Dict[str, str]]] = Field(default_factory=list, description="Prior conversation messages")
+
+
+class TextAnalysisRequest(BaseModel):
+    """Payload to evaluate linguistic diversity and AI text indicators."""
+    text: str = Field(description="Caption, article, or social media text to analyze")
 
 
 # ------------------------------------------------------------------------------
@@ -233,6 +256,13 @@ def run_multimodal_analysis(
         "ai_generated_video_indicators": visual_res.ai_generated_video_indicators,
         "is_flagged_deepfake": visual_res.is_flagged_deepfake,
         "is_flagged_ai_video": visual_res.is_flagged_ai_video,
+        "median_fake_score": visual_res.median_fake_score,
+        "median_face_fake_score": visual_res.median_face_fake_score,
+        "p75_face_fake_score": visual_res.p75_face_fake_score,
+        "robust_face_fake_score": visual_res.robust_face_fake_score,
+        "num_faces_detected": visual_res.num_faces_detected,
+        "trimmed_mean_fake_score": visual_res.trimmed_mean_fake_score,
+        "detection_screenshots": visual_res.detection_screenshots,
         "top_flagged_frames": [
             {
                 "frame_path": fp.frame_path,
@@ -312,7 +342,8 @@ def run_multimodal_analysis(
         caption=caption,
         flagged_frame_paths=flagged_paths,
         face_crop_paths=visual_res.face_crop_paths,
-        ela_heatmap_path=ela_path
+        ela_heatmap_path=ela_path,
+        detection_screenshots=visual_res.detection_screenshots
     )
 
     # Step 7: Persist Forensic Report JSON
@@ -486,6 +517,58 @@ async def analyze_uploaded_file(
                 pass
 
 
+@app.post("/api/compare", response_model=ComparisonResult, tags=["Forensics"])
+def compare_real_vs_ai(
+    original_file: UploadFile = File(..., description="Original authentic reference photo or video"),
+    suspect_file: UploadFile = File(..., description="Suspect photo or video to verify"),
+):
+    """
+    Forensic side-by-side comparison between an authentic reference image/video and suspect media.
+    Evaluates biometric facial structure, high-frequency sensor noise, ELA heatmaps, and AI visual cues.
+    """
+    if not original_file.filename or not suspect_file.filename:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Both original_file and suspect_file must be provided with valid filenames."
+        )
+
+    compare_dir = TEMP_DIR / f"compare_{uuid.uuid4().hex[:10]}"
+    compare_dir.mkdir(parents=True, exist_ok=True)
+
+    orig_path = compare_dir / f"original_{original_file.filename}"
+    susp_path = compare_dir / f"suspect_{suspect_file.filename}"
+
+    try:
+        with open(orig_path, "wb") as f_orig:
+            shutil.copyfileobj(original_file.file, f_orig)
+        with open(susp_path, "wb") as f_susp:
+            shutil.copyfileobj(suspect_file.file, f_susp)
+
+        result = compare_media(
+            original_path=orig_path,
+            suspect_path=susp_path,
+            correlator_instance=correlator
+        )
+        return result
+    except FileNotFoundError as fnfe:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(fnfe)
+        )
+    except Exception as e:
+        logger.error(f"Error executing media comparison: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Forensic comparison failed: {str(e)}"
+        )
+    finally:
+        if compare_dir.exists():
+            try:
+                shutil.rmtree(compare_dir)
+            except Exception:
+                pass
+
+
 @app.get("/reports/{sha256_hash}", response_model=ForensicReport, tags=["Forensics"])
 def get_cached_report(sha256_hash: str):
     """
@@ -571,6 +654,224 @@ def list_reported_incidents():
     except Exception as e:
         logger.error(f"Error reading incidents: {e}")
         return []
+
+
+@app.post("/api/assistant", response_model=AssistantResponse, tags=["AI Assistant"])
+def ask_investigation_assistant(request: AssistantRequest):
+    """
+    Answers inquiries strictly grounded in an investigation's forensic telemetry.
+    Uses Gemini when configured, with a deterministic grounded heuristic fallback.
+    """
+    sha = request.investigation_id.strip()
+    job_dir = OUTPUT_DIR / sha
+    rep_file = job_dir / "forensic_report.json"
+
+    investigation_data: Dict[str, Any] = {"report": {}, "pipeline_telemetry": {}}
+    if rep_file.exists():
+        try:
+            with open(rep_file, "r", encoding="utf-8") as f:
+                rep_data = json.load(f)
+            investigation_data["report"] = rep_data
+        except Exception as e:
+            logger.warning(f"Could not read forensic report for assistant: {e}")
+
+    try:
+        response = investigation_assistant(
+            investigation_id=sha,
+            investigation_data=investigation_data,
+            question=request.question,
+            chat_history=request.chat_history
+        )
+        return response
+    except Exception as e:
+        logger.error(f"Assistant query failed: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Assistant failed: {str(e)}"
+        )
+
+
+@app.post("/api/analyze/text", response_model=TextForensicsResult, tags=["Text Forensics"])
+def analyze_text(request: TextAnalysisRequest):
+    """
+    Evaluates text for linguistic diversity, burstiness, repetition, and formulaic AI writing.
+    Provides transparent probabilistic indicators with an explicit uncertainty disclaimer.
+    """
+    text = request.text.strip()
+    if not text:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Text payload cannot be empty."
+        )
+    return analyze_text_forensics(text)
+
+
+@app.get("/api/overview", tags=["Analytics"])
+def get_dashboard_overview():
+    """
+    Calculates verified analytics aggregated from stored reports and logged incidents.
+    Never fabricates stats; shows real telemetry or clean empty states.
+    """
+    scans = []
+    if OUTPUT_DIR.exists():
+        for d in OUTPUT_DIR.iterdir():
+            if d.is_dir():
+                rep_file = d / "forensic_report.json"
+                if rep_file.exists():
+                    try:
+                        with open(rep_file, "r", encoding="utf-8") as f:
+                            data = json.load(f)
+                            scans.append(data)
+                    except Exception:
+                        pass
+
+    total_scans = len(scans)
+    flagged_deepfakes = sum(
+        1 for s in scans
+        if "MANIPULATED" in str(s.get("verdict", "")).upper() or "DEEPFAKE" in str(s.get("verdict", "")).upper()
+    )
+    suspicious_count = sum(
+        1 for s in scans
+        if "SUSPICIOUS" in str(s.get("verdict", "")).upper() or "REVIEW" in str(s.get("verdict", "")).upper()
+    )
+    authentic_count = sum(
+        1 for s in scans
+        if "AUTHENTIC" in str(s.get("verdict", "")).upper() or "REAL" in str(s.get("verdict", "")).upper()
+    )
+
+    avg_score = float(np.mean([s.get("deepfake_probability", 0.0) for s in scans])) if scans else 0.0
+
+    # Build recent scans
+    recent = []
+    sorted_scans = sorted(
+        scans,
+        key=lambda x: (x.get("provenance") or {}).get("analyzed_at", "") if isinstance(x.get("provenance"), dict) else "",
+        reverse=True
+    )
+    for s in sorted_scans[:8]:
+        prov = s.get("provenance") if isinstance(s.get("provenance"), dict) else {}
+        recent.append({
+            "sha256_hash": s.get("sha256_hash", ""),
+            "verdict": s.get("verdict", "N/A"),
+            "score": s.get("deepfake_probability", 0.0),
+            "media_type": prov.get("media_type", "video"),
+            "source": prov.get("source_identifier", s.get("sha256_hash", "")[:12]),
+            "analyzed_at": prov.get("analyzed_at", "")
+        })
+
+    incidents_count = 0
+    if INCIDENTS_FILE.exists():
+        try:
+            with open(INCIDENTS_FILE, "r", encoding="utf-8") as f:
+                incidents_count = len(json.load(f))
+        except Exception:
+            incidents_count = 0
+
+    return {
+        "total_scans": total_scans,
+        "flagged_deepfakes": flagged_deepfakes,
+        "suspicious_count": suspicious_count,
+        "authentic_count": authentic_count,
+        "average_manipulation_score": round(avg_score, 3),
+        "reported_incidents_count": incidents_count,
+        "recent_scans": recent
+    }
+
+
+@app.get("/api/models/status", tags=["System"])
+def get_models_status():
+    """
+    Returns real operational status, device placement, latency, and honest evaluation status.
+    """
+    return {
+        "device": DEVICE,
+        "models": [
+            {
+                "name": "dima806/deepfake_vs_real_image_detection",
+                "role": "Facial & Visual Deepfake Classifier (ViT)",
+                "type": "Hugging Face ViT",
+                "status": "Loaded" if visual_analyzer.detector._is_loaded else "Ready (Lazy Load)",
+                "device": DEVICE,
+                "benchmark_accuracy": "Evaluation Pending",
+                "calibration": "Median & Trimmed-Mean Aggregation"
+            },
+            {
+                "name": "HyperMoon/wav2vec2-base-960h-finetuned-deepfake",
+                "role": "Synthetic Speech & Voice Clone Classifier",
+                "type": "Hugging Face Wav2Vec2",
+                "status": "Loaded" if audio_analyzer.detector._is_loaded else "Ready (Lazy Load)",
+                "device": DEVICE,
+                "benchmark_accuracy": "Evaluation Pending",
+                "calibration": "Speech-RMS Isolation & Music Dampening"
+            },
+            {
+                "name": "openai/clip-vit-base-patch32",
+                "role": "Visual-Language Context & Caption Consistency",
+                "type": "Hugging Face CLIP",
+                "status": "Loaded" if cross_modal_analyzer.clip_mgr._is_loaded else "Ready (Lazy Load)",
+                "device": DEVICE,
+                "benchmark_accuracy": "Evaluation Pending",
+                "calibration": "Cosine Embedding Similarity"
+            },
+            {
+                "name": "MIT/ast-finetuned-audioset-10-10-0.4593",
+                "role": "Acoustic Scene & Environmental Audio Classifier",
+                "type": "Hugging Face AST",
+                "status": "Loaded" if cross_modal_analyzer.ast_classifier._is_loaded else "Ready (Lazy Load)",
+                "device": DEVICE,
+                "benchmark_accuracy": "Evaluation Pending",
+                "calibration": "Spectral Scene Classification"
+            },
+            {
+                "name": "MediaPipe FaceMesh / OpenCV",
+                "role": "Facial Landmark & Lip-Sync Dynamics Tracker",
+                "type": "Vision Pipeline",
+                "status": "Operational",
+                "device": "CPU",
+                "benchmark_accuracy": "Deterministic Geometric",
+                "calibration": "Square Aspect-Ratio Padding"
+            },
+            {
+                "name": GEMINI_MODEL,
+                "role": "Multimodal Forensic Arbiter (60% Fusion Weight)",
+                "type": "Google GenAI Multimodal API",
+                "status": "Connected" if GEMINI_API_KEY else "Fallback (Offline Heuristic)",
+                "device": "Cloud API",
+                "benchmark_accuracy": "Evaluation Pending",
+                "calibration": "Structured JSON Schema"
+            }
+        ]
+    }
+
+
+@app.get("/api/history", tags=["Forensics"])
+def get_investigation_history():
+    """
+    Lists all stored forensic investigations from the workspace.
+    """
+    history = []
+    if OUTPUT_DIR.exists():
+        for d in OUTPUT_DIR.iterdir():
+            if d.is_dir():
+                rep_file = d / "forensic_report.json"
+                if rep_file.exists():
+                    try:
+                        with open(rep_file, "r", encoding="utf-8") as f:
+                            rep = json.load(f)
+                            prov = rep.get("provenance") or {}
+                            history.append({
+                                "sha256_hash": rep.get("sha256_hash", d.name),
+                                "verdict": rep.get("verdict", "Unknown"),
+                                "score": rep.get("deepfake_probability", 0.0),
+                                "confidence": rep.get("confidence_level", "Moderate"),
+                                "media_type": prov.get("media_type", "video"),
+                                "source_identifier": prov.get("source_identifier", d.name[:12]),
+                                "analyzed_at": prov.get("analyzed_at", "")
+                            })
+                    except Exception:
+                        pass
+    history.sort(key=lambda x: x.get("analyzed_at", ""), reverse=True)
+    return history
 
 
 if __name__ == "__main__":

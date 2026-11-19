@@ -33,6 +33,19 @@ from pipeline.correlator import (
     AssessmentLevel,
     MediaOriginAssessment
 )
+from pipeline.compare import (
+    compare_media,
+    ComparisonResult,
+    LocalForensicsSummary
+)
+from pipeline.assistant import (
+    investigation_assistant,
+    AssistantResponse
+)
+from pipeline.text_forensics import (
+    analyze_text_forensics,
+    TextForensicsResult
+)
 
 __all__ = [
     "IngestPipeline",
@@ -61,4 +74,11 @@ __all__ = [
     "AssessmentItem",
     "AssessmentLevel",
     "MediaOriginAssessment",
+    "compare_media",
+    "ComparisonResult",
+    "LocalForensicsSummary",
+    "investigation_assistant",
+    "AssistantResponse",
+    "analyze_text_forensics",
+    "TextForensicsResult",
 ]

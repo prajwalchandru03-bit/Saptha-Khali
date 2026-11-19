@@ -1,9 +1,11 @@
 """
 TruthLens Multimodal Forensic Correlator Module (Optimized for Reels & Social Video)
 Sends extracted signals, transcripts, captions, and top flagged frames (full frames + face crops / ELA heatmaps)
-to Gemini API (google-genai) and returns a strict Pydantic JSON forensic report with:
+to Gemini API (google-genai) as Multimodal Forensic Arbiter and produces a strict Pydantic JSON forensic report with:
 - 3-way media origin assessment (deepfake_face_manipulation, ai_generated_visuals, voice_manipulation_or_other_voice)
-- deepfake_alert_triggered (bool)
+- 60% Arbiter / 40% Local weighted calibrated score
+- Honest verdicts: AUTHENTIC / LIKELY REAL, SUSPICIOUS / REVIEW RECOMMENDED, MANIPULATED / DEEPFAKE
+- Evidence timeline events, interactive vis-network correlation graph, and provenance metadata
 - draft_takedown_report (str ready for platform submission)
 """
 
@@ -14,7 +16,7 @@ import os
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 from pydantic import BaseModel, Field
@@ -75,6 +77,25 @@ class CrossModalFindings(BaseModel):
     )
 
 
+def clamp(v: Any, low: float = 0.05, high: float = 0.92) -> float:
+    """
+    Clamps any probability/confidence score strictly to [low, high]:
+    - If v > 1.0 (e.g. 0-100 percentage scale), divide by 100.0 first.
+    - Clamps strictly to [low, high] (defaults to [0.05, 0.92], never 1.0 / 100%).
+    """
+    try:
+        val = float(v)
+    except (ValueError, TypeError):
+        return low
+    if val > 1.0:
+        val = val / 100.0
+    return round(max(low, min(high, val)), 4)
+
+
+def normalize_prob(v: Any) -> float:
+    return clamp(v, 0.05, 0.92)
+
+
 class AssessmentItem(BaseModel):
     """Calibrated forensic likelihood assessment and reason."""
     indicator: AssessmentLevel = Field(
@@ -82,6 +103,10 @@ class AssessmentItem(BaseModel):
     )
     reason: str = Field(
         description="Concise evidence-backed reasoning based on model metrics and visual inspection"
+    )
+    score: Optional[float] = Field(
+        default=None,
+        description="Calibrated probability score clamped strictly between 0.04 and 0.94"
     )
 
 
@@ -98,17 +123,113 @@ class MediaOriginAssessment(BaseModel):
     )
 
 
+class TimelineEvent(BaseModel):
+    """Individual timestamped event for the interactive forensic timeline."""
+    timestamp_seconds: float = 0.0
+    time_formatted: str = "00:00.0s"
+    modality: str = "visual"
+    severity: str = "medium"  # "low", "medium", "high"
+    indicator: str = ""
+    description: str = ""
+
+
+class ProvenanceInfo(BaseModel):
+    """Cryptographic and technical provenance metadata."""
+    sha256_hash: str
+    media_type: str = "video"
+    source_identifier: str = ""
+    analyzed_at: str = ""
+    duration_seconds: Optional[float] = None
+    frame_count: int = 0
+    camera_make: Optional[str] = None
+    camera_model: Optional[str] = None
+    software: Optional[str] = None
+    platform_recompression_note: Optional[str] = None
+
+
+class GraphNode(BaseModel):
+    """vis-network compatible node for correlation graph visualization."""
+    id: str
+    label: str
+    group: str
+    status: str = "neutral"
+    score: Optional[float] = None
+
+
+class GraphEdge(BaseModel):
+    """vis-network compatible edge for correlation graph visualization."""
+    from_node: str = Field(alias="from")
+    to_node: str = Field(alias="to")
+    label: Optional[str] = None
+    style: Optional[str] = None
+
+    class Config:
+        populate_by_name = True
+
+
+class CorrelationGraph(BaseModel):
+    """Interactive multi-modal correlation network."""
+    nodes: List[GraphNode] = Field(default_factory=list)
+    edges: List[GraphEdge] = Field(default_factory=list)
+
+
+class GeminiArbiterReport(BaseModel):
+    """
+    Structured Gemini Multimodal Arbiter schema.
+    Conforms strictly to Gemini Developer API constraints (primitive types + List[str] only).
+    """
+    visual_ai_probability: float = Field(
+        ge=0.0, le=1.0,
+        description="Probability that the visual content is AI-generated, synthetic, or face-swapped (0.0 = completely genuine camera footage, 1.0 = synthetic/deepfake)."
+    )
+    is_likely_authentic: bool = Field(
+        description="True if the visual media appears to be authentic camera footage with normal social media compression; false if AI-generated or manipulated."
+    )
+    deepfake_face_manipulation_score: float = Field(
+        ge=0.0, le=1.0,
+        description="Likelihood of face-swap or facial manipulation: blending seams along jawline/forehead, unnatural skin pore distribution, eye/pupil/teeth warping, uncanny identity smoothness, or lighting mismatch on face vs neck (0.0 to 1.0)."
+    )
+    ai_generated_visuals_score: float = Field(
+        ge=0.0, le=1.0,
+        description="Likelihood of generative AI video artifacts: morphing geometry, background wobble, synthetic textures, unnatural hand/limb deformation (Sora, Runway, Kling, Midjourney) (0.0 to 1.0)."
+    )
+    voice_manipulation_score: float = Field(
+        ge=0.0, le=1.0,
+        description="Likelihood of synthetic voice clone, TTS, or dubbed audio mismatch (0.0 to 1.0, or 0.0 if image/silent)."
+    )
+    forensic_summary: str = Field(
+        description="Clear 2-3 sentence expert forensic explanation referencing what was actually observed across the keyframes, face crops, and acoustic telemetry."
+    )
+    reasons_face_manipulation: str = Field(
+        description="Technical reason for facial manipulation assessment referencing specific facial cues or lack thereof."
+    )
+    reasons_ai_visuals: str = Field(
+        description="Concise technical reason for AI visual generation assessment."
+    )
+    reasons_voice_manipulation: str = Field(
+        description="Concise technical reason for audio/voice assessment."
+    )
+    key_indicators: List[str] = Field(
+        default_factory=list,
+        description="List of detected anomalies or confirmed authentic traits."
+    )
+    recommended_human_checks: List[str] = Field(
+        default_factory=list,
+        description="Actionable verification steps for human OSINT analysts."
+    )
+
+
 class ForensicReport(BaseModel):
-    """Strict Pydantic JSON forensic report produced by Gemini correlator."""
+    """Strict Pydantic JSON forensic report produced by TruthLens correlator."""
     sha256_hash: str = Field(
         description="Cryptographic SHA-256 hash of the analyzed media file for evidence provenance"
     )
     verdict: str = Field(
-        description="Overall forensic verdict: 'Likely Authentic', 'Manipulated / Deepfake', 'Out-of-Context Misinformation', or 'Suspicious / Inconclusive'"
+        description="Calibrated verdict: 'AUTHENTIC / LIKELY REAL', 'SUSPICIOUS / REVIEW RECOMMENDED', or 'MANIPULATED / DEEPFAKE'"
     )
     deepfake_probability: float = Field(
         ge=0.0, le=1.0,
-        description="Aggregated calculated probability of synthetic manipulation (0.0 = completely genuine, 1.0 = confirmed synthetic/deepfake)"
+        description="Combined 60% Arbiter / 40% Local probability of synthetic manipulation"
     )
     confidence_level: ConfidenceLevel = Field(
         description="Confidence level of this forensic determination: Low, Moderate, or High"
@@ -140,6 +261,26 @@ class ForensicReport(BaseModel):
         default_factory=list,
         description="Actionable forensic verification steps recommended for human OSINT investigators or fact-checkers"
     )
+    timeline_events: List[TimelineEvent] = Field(
+        default_factory=list,
+        description="Chronological forensic anomaly timeline across video duration"
+    )
+    provenance: Optional[ProvenanceInfo] = Field(
+        default=None,
+        description="Evidentiary provenance metadata"
+    )
+    correlation_graph: Optional[CorrelationGraph] = Field(
+        default=None,
+        description="Graph nodes and edges for vis-network interactive diagram"
+    )
+    arbiter_summary: Optional[str] = Field(
+        default=None,
+        description="Direct assessment from Gemini Multimodal Arbiter"
+    )
+    detection_screenshots: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="Annotated detection evidence screenshots highlighting detected faces or AI anomalies"
+    )
 
 
 def generate_draft_takedown_text(
@@ -170,7 +311,7 @@ def generate_draft_takedown_text(
         f"GENERATION TIMESTAMP: {ts}\n"
         f"TARGET MEDIA / URL: {source_identifier}\n"
         f"SHA-256 PROVENANCE HASH: {sha256_hash}\n"
-        f"AGGREGATE MANIPULATION PROBABILITY: {deepfake_probability * 100:.1f}%\n"
+        f"AGGREGATE MANIPULATION PROBABILITY: {normalize_prob(deepfake_probability) * 100:.1f}%\n"
         f"OVERALL FORENSIC VERDICT: {verdict}\n\n"
         "--------------------------------------------------------------------------------\n"
         "1. THREE-WAY MEDIA ORIGIN ASSESSMENT\n"
@@ -211,6 +352,161 @@ def generate_draft_takedown_text(
     return takedown
 
 
+def build_investigation_enrichment(
+    sha256_hash: str,
+    ingest_info: Dict[str, Any],
+    visual_info: Dict[str, Any],
+    audio_info: Dict[str, Any],
+    cross_modal_info: Dict[str, Any],
+    verdict: str,
+    combined_score: float,
+    local_visual: float,
+    local_audio: float,
+    local_cross: float
+) -> Tuple[ProvenanceInfo, List[TimelineEvent], CorrelationGraph]:
+    """Generates provenance metadata, timeline events, and vis-network graph."""
+    is_picture = (ingest_info.get("media_type") == "image")
+    has_audio = audio_info.get("has_audio", False) and not is_picture
+
+    # 1. Provenance
+    exif = visual_info.get("exif_analysis") or {}
+    provenance = ProvenanceInfo(
+        sha256_hash=sha256_hash,
+        media_type=ingest_info.get("media_type", "video"),
+        source_identifier=ingest_info.get("original_filename") or ingest_info.get("metadata", {}).get("source_url") or f"SHA256-{sha256_hash[:12]}",
+        analyzed_at=datetime.now(timezone.utc).isoformat(),
+        duration_seconds=round(ingest_info.get("duration_seconds", 0.0), 2) if not is_picture else None,
+        frame_count=ingest_info.get("num_frames", 1),
+        camera_make=exif.get("camera_make"),
+        camera_model=exif.get("camera_model"),
+        software=exif.get("software"),
+        platform_recompression_note=exif.get("platform_note")
+    )
+
+    # 2. Timeline Events
+    timeline_events: List[TimelineEvent] = []
+
+    # Flagged frames
+    for fp in visual_info.get("top_flagged_frames", []):
+        ts = fp.get("timestamp", 0.0)
+        face_score = fp.get("face_fake_score", 0.0)
+        score = fp.get("fake_score", 0.0)
+        if score >= 0.70 or face_score >= 0.70:
+            sev = "high"
+        elif score >= 0.40 or face_score >= 0.40:
+            sev = "medium"
+        else:
+            sev = "low"
+
+        mins = int(ts // 60)
+        secs = ts % 60
+        formatted_time = f"{mins:02d}:{secs:04.1f}s"
+
+        timeline_events.append(TimelineEvent(
+            timestamp_seconds=round(ts, 2),
+            time_formatted=formatted_time,
+            modality="visual",
+            severity=sev,
+            indicator="Keyframe / Facial Anomaly",
+            description=f"Frame at {formatted_time} flagged with fake score {score:.2f} (face crop: {face_score:.2f})."
+        ))
+
+    # Audio spikes
+    if has_audio:
+        for spike in audio_info.get("synthetic_voice_spikes", []):
+            start_s = float(spike.get("start_seconds", 0.0))
+            f_score = float(spike.get("fake_score", 0.0))
+            mins = int(start_s // 60)
+            secs = start_s % 60
+            formatted_time = f"{mins:02d}:{secs:04.1f}s"
+            sev = "high" if f_score >= 0.70 else "medium"
+
+            timeline_events.append(TimelineEvent(
+                timestamp_seconds=round(start_s, 2),
+                time_formatted=formatted_time,
+                modality="audio",
+                severity=sev,
+                indicator="Voice Clone Vocoder Spike",
+                description=str(spike.get("description", f"Wav2Vec2 synthetic score {f_score:.2f}"))
+            ))
+
+    # Cross-modal desync
+    lip_sync = cross_modal_info.get("lip_sync") or {}
+    if not is_picture and lip_sync.get("dubbed_voice_detected"):
+        timeline_events.append(TimelineEvent(
+            timestamp_seconds=0.0,
+            time_formatted="00:00.0s",
+            modality="cross_modal",
+            severity="high",
+            indicator="Speech-Mouth Cadence Desync",
+            description="Speech acoustic energy active during static or mismatched mouth frames (dubbing / audio replacement)."
+        ))
+
+    timeline_events.sort(key=lambda e: e.timestamp_seconds)
+
+    # 3. Correlation Graph
+    def get_status(score_val: float) -> str:
+        if score_val >= 0.70:
+            return "deepfake"
+        elif score_val >= 0.40:
+            return "suspicious"
+        return "authentic"
+
+    nodes = [
+        GraphNode(id="media", label=f"Media: {ingest_info.get('media_type', 'media').upper()}", group="root", status="neutral"),
+        GraphNode(id="visual", label=f"Visual ({local_visual:.2f})", group="modality", status=get_status(local_visual), score=local_visual),
+        GraphNode(id="ela", label="Error Level Analysis", group="feature", status="neutral"),
+        GraphNode(id="cross", label="Cross-Modal Sync", group="modality", status=get_status(local_cross), score=local_cross),
+        GraphNode(id="arbiter", label="Forensic Arbiter", group="arbiter", status=get_status(combined_score), score=combined_score),
+        GraphNode(id="verdict", label=f"Verdict: {verdict}", group="verdict", status=get_status(combined_score), score=combined_score),
+    ]
+
+    if has_audio:
+        nodes.append(GraphNode(id="audio", label=f"Audio ({local_audio:.2f})", group="modality", status=get_status(local_audio), score=local_audio))
+
+    edges = [
+        GraphEdge(from_node="media", to_node="visual", label="Frames"),
+        GraphEdge(from_node="visual", to_node="ela", label="Pixel Error"),
+        GraphEdge(from_node="visual", to_node="cross", label="Facial Sync"),
+        GraphEdge(from_node="visual", to_node="arbiter", label="Visual Features"),
+        GraphEdge(from_node="cross", to_node="arbiter", label="Consistency"),
+        GraphEdge(from_node="arbiter", to_node="verdict", label="Final Decision"),
+        GraphEdge(from_node="visual", to_node="verdict", label="Weight 40%"),
+    ]
+
+    if has_audio:
+        edges.append(GraphEdge(from_node="media", to_node="audio", label="Acoustic Track"))
+        edges.append(GraphEdge(from_node="audio", to_node="cross", label="Speech Energy"))
+        edges.append(GraphEdge(from_node="audio", to_node="arbiter", label="Voice Timbre"))
+
+    graph = CorrelationGraph(nodes=nodes, edges=edges)
+    return provenance, timeline_events, graph
+
+
+def run_with_timeout(func, args=(), kwargs=None, timeout: float = 10.0):
+    """Executes a callable with a strict timeout using a daemon thread."""
+    import threading
+    result = [None]
+    error = [None]
+    event = threading.Event()
+
+    def worker():
+        try:
+            result[0] = func(*args, **(kwargs or {}))
+        except Exception as e:
+            error[0] = e
+        finally:
+            event.set()
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+    if not event.wait(timeout=timeout):
+        raise TimeoutError(f"Operation timed out after {timeout} seconds")
+    if error[0] is not None:
+        raise error[0]
+    return result[0]
+
+
 class Correlator:
     """
     Multimodal Correlator that communicates with the Gemini API (google-genai)
@@ -224,7 +520,10 @@ class Correlator:
         model_name: Optional[str] = None
     ):
         self.api_key = api_key or os.getenv("GEMINI_API_KEY")
-        self.model_name = model_name or os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+        configured_model = model_name or os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+        if configured_model and "3.8" in configured_model:
+            configured_model = "gemini-2.5-flash"
+        self.model_name = configured_model or "gemini-2.5-flash"
         self.client = None
 
         if self.api_key:
@@ -245,7 +544,8 @@ class Correlator:
         caption: Optional[str] = None,
         flagged_frame_paths: Optional[List[str]] = None,
         face_crop_paths: Optional[List[str]] = None,
-        ela_heatmap_path: Optional[str] = None
+        ela_heatmap_path: Optional[str] = None,
+        detection_screenshots: Optional[List[Dict[str, Any]]] = None
     ) -> ForensicReport:
         """
         Sends all signals, transcripts, captions, and top flagged frames (full frames + face crops / ELA)
@@ -263,10 +563,11 @@ class Correlator:
                     caption=caption,
                     flagged_frame_paths=flagged_frame_paths or [],
                     face_crop_paths=face_crop_paths or [],
-                    ela_heatmap_path=ela_heatmap_path
+                    ela_heatmap_path=ela_heatmap_path,
+                    detection_screenshots=detection_screenshots or []
                 )
             except Exception as e:
-                logger.error(f"Gemini API generation failed: {e}. Falling back to rule-based synthesis.", exc_info=True)
+                logger.warning(f"Gemini Arbiter offline/timed out ({e}). Using calibrated local forensic synthesis.")
 
         return self._local_heuristic_synthesis(
             sha256_hash=sha256_hash,
@@ -277,7 +578,8 @@ class Correlator:
             caption=caption,
             flagged_frame_paths=flagged_frame_paths or [],
             face_crop_paths=face_crop_paths or [],
-            ela_heatmap_path=ela_heatmap_path
+            ela_heatmap_path=ela_heatmap_path,
+            detection_screenshots=detection_screenshots or []
         )
 
     def _call_gemini(
@@ -290,37 +592,30 @@ class Correlator:
         caption: Optional[str],
         flagged_frame_paths: List[str],
         face_crop_paths: List[str],
-        ela_heatmap_path: Optional[str]
+        ela_heatmap_path: Optional[str],
+        detection_screenshots: Optional[List[Dict[str, Any]]] = None
     ) -> ForensicReport:
-        """Invokes google-genai SDK with structured Pydantic schema."""
+        """Invokes google-genai SDK with structured GeminiArbiterReport schema."""
         from google.genai import types
 
         contents: List[Any] = []
 
         system_instruction = (
-            "You are TruthLens Senior Forensic Analyst, an elite expert in multimodal digital forensics, "
+            "You are TruthLens Senior Forensic Arbiter, an elite specialist in multimodal digital forensics, "
             "deepfake detection, generative AI video analysis (Sora, Runway, Kling, Luma), speech synthesis detection, "
-            "and social media disinformation verification (Instagram Reels, YouTube Shorts, TikTok, uploaded photos/videos).\n\n"
-            "TASK INSTRUCTIONS:\n"
-            "1. Inspect the attached top keyframes (full frames, cropped faces, and ELA heatmap) thoroughly for generative AI cues:\n"
-            "   - Warped, liquid, or shifting architectural geometry and backgrounds across frames\n"
-            "   - Unnatural skin smoothness (plastic or airbrushed sheen lacking biological micro-pores)\n"
-            "   - Distorted hands, fused or extra fingers, impossible limb intersections\n"
-            "   - Warped, melted, or irregular teeth and asymmetric pupils\n"
-            "   - Garbled, pseudo-alphabetic, or fluctuating text/logos on clothing or signs\n"
-            "   - Face-swap boundary seams, edge halos, or skin-tone/lighting discrepancy along the jawline/hairline\n"
-            "2. Correlate with model telemetry (ViT deepfake scores, temporal flicker scores, active-speech Wav2Vec2 clone spikes, lip-sync RMS correlation, AST audio tags).\n"
-            "3. If media is a static picture, gracefully note that audio and lip-sync are not applicable.\n"
-            "4. Note platform realities: Instagram/YouTube recompression to H.264/AAC and stripped EXIF are normal platform behaviors, NOT proof of manipulation.\n"
-            "5. Provide a clear 3-way breakdown in media_origin_assessment: 'deepfake_face_manipulation', 'ai_generated_visuals', and 'voice_manipulation_or_other_voice' "
-            "(each with indicator: 'Low', 'Moderate', or 'High' + evidence-backed concise reason).\n"
-            "6. Set deepfake_alert_triggered to true if ANY of the 3 indicators is Moderate or High.\n"
-            "7. Generate a professional, complete draft_takedown_report text ready for platform/cyber-crime submission.\n"
-            "8. Return a strict JSON conforming to the ForensicReport Pydantic schema."
+            "and social media verification.\n\n"
+            "CRITICAL CALIBRATION INSTRUCTIONS:\n"
+            "1. Inspect BOTH the attached full keyframes AND the cropped face images visually.\n"
+            "2. Inspect for facial manipulation: blending seams around jawline/hairline/forehead, unnatural skin pore distribution, eye/pupil/teeth warping, uncanny identity smoothness, or lighting mismatch on face vs neck.\n"
+            "3. Inspect for generative AI video artifacts: morphing geometry, background wobble, synthetic textures, unnatural hand/limb deformation.\n"
+            "4. Distinguish normal social media compression (H.264 blockiness, chroma subsampling 4:2:0, smoothing, mobile compression) "
+            "from GENUINE AI generation. Normal compression on Instagram/YouTube Reels alone is NOT proof of AI.\n"
+            "5. Return visual_ai_probability (0.0 = authentic, 1.0 = synthetic), is_likely_authentic (bool), and 3-way likelihood scores for deepfake_face_manipulation_score, ai_generated_visuals_score, and voice_manipulation_score.\n"
+            "6. Provide forensic_summary (2-3 clear sentences explaining what was actually seen on the face and frames)."
         )
 
         prompt_payload = {
-            "task": "Perform Multimodal Forensic Correlation & Generate Forensic Report",
+            "task": "Multimodal Forensic Arbiter Assessment",
             "sha256_hash": sha256_hash,
             "social_media_caption": caption or "None provided",
             "ingest_metadata": ingest_info,
@@ -331,54 +626,276 @@ class Correlator:
 
         prompt_text = (
             f"{system_instruction}\n\n"
-            f"FORENSIC SIGNALS AND TELEMETRY:\n{json.dumps(prompt_payload, indent=2, default=str)}\n\n"
-            "Examine the attached image keyframes, face crops, and ELA heatmap visually and return the complete ForensicReport JSON."
+            f"TELEMETRY & LOCAL DETECTOR OUTPUTS:\n{json.dumps(prompt_payload, indent=2, default=str)}\n\n"
+            "Examine the attached image keyframes and return the structured GeminiArbiterReport JSON."
         )
         contents.append(prompt_text)
 
-        # Attach up to 4 top visual items (prioritizing face crops, full frames, and ELA heatmap)
+        # Attach up to 6 visual assets: face crops, full keyframes, and ELA heatmap
         all_imgs = []
-        for fc in face_crop_paths[:2]:
-            all_imgs.append((fc, "Cropped Face"))
-        for ff in flagged_frame_paths[:2]:
-            if ff not in [x[0] for x in all_imgs]:
-                all_imgs.append((ff, "Full Keyframe"))
-        if ela_heatmap_path and Path(ela_heatmap_path).exists() and len(all_imgs) < 4:
-            all_imgs.append((ela_heatmap_path, "ELA Heatmap"))
+        for fc in face_crop_paths[:3]:
+            if fc not in all_imgs and Path(fc).exists():
+                all_imgs.append(fc)
+        for ff in flagged_frame_paths[:3]:
+            if ff not in all_imgs and Path(ff).exists():
+                all_imgs.append(ff)
+        if ela_heatmap_path and Path(ela_heatmap_path).exists() and ela_heatmap_path not in all_imgs and len(all_imgs) < 6:
+            all_imgs.append(ela_heatmap_path)
 
-        for f_path, label in all_imgs[:4]:
+        for f_path in all_imgs[:6]:
             try:
                 p = Path(f_path)
                 if p.exists():
-                    with open(p, "rb") as f:
-                        img_bytes = f.read()
-                    mime = "image/png" if p.suffix.lower() == ".png" else "image/jpeg"
+                    with Image.open(p) as img:
+                        img_rgb = img.convert("RGB")
+                        img_rgb.thumbnail((512, 512), Image.Resampling.LANCZOS)
+                        buf = io.BytesIO()
+                        img_rgb.save(buf, format="JPEG", quality=70, optimize=True)
+                        img_bytes = buf.getvalue()
                     contents.append(
                         types.Part.from_bytes(
                             data=img_bytes,
-                            mime_type=mime
+                            mime_type="image/jpeg"
                         )
                     )
             except Exception as img_err:
-                logger.warning(f"Could not load image {f_path} for Gemini prompt: {img_err}")
+                logger.warning(f"Could not load/resize image {f_path} for Gemini prompt: {img_err}")
 
         config = types.GenerateContentConfig(
             response_mime_type="application/json",
-            response_schema=ForensicReport,
+            response_schema=GeminiArbiterReport,
             temperature=0.2,
+            http_options=types.HttpOptions(timeout=15),
         )
 
-        response = self.client.models.generate_content(
-            model=self.model_name,
-            contents=contents,
-            config=config,
+        models_to_try = [self.model_name]
+        for candidate in ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]:
+            if candidate not in models_to_try:
+                models_to_try.append(candidate)
+
+        response = None
+        last_error = None
+        used_model = None
+
+        for model_candidate in models_to_try:
+            try:
+                logger.info(f"Calling Gemini Arbiter using model '{model_candidate}'...")
+                response = run_with_timeout(
+                    self.client.models.generate_content,
+                    kwargs={"model": model_candidate, "contents": contents, "config": config},
+                    timeout=10.0
+                )
+                if response and response.text:
+                    used_model = model_candidate
+                    logger.info(f"Gemini Arbiter ({model_candidate}) responded successfully.")
+                    break
+            except Exception as e:
+                last_error = e
+                err_str = str(e).lower()
+                if "timeout" in err_str or "connect" in err_str or "network" in err_str:
+                    logger.warning(f"Gemini Arbiter connection/timeout on '{model_candidate}': {e}")
+                    break
+                else:
+                    logger.warning(f"Gemini Arbiter ({model_candidate}) failed: {e}")
+
+        if not response or not response.text:
+            raise last_error or ValueError("Empty response received from Gemini API.")
+
+        arbiter = GeminiArbiterReport.model_validate_json(response.text)
+        human_summary = arbiter.forensic_summary.strip()
+        logger.info(f"Gemini Arbiter summary ({used_model}): {human_summary[:120]}...")
+
+        # Calculate local calibrated scores
+        is_picture = (ingest_info.get("media_type") == "image")
+        has_audio = audio_info.get("has_audio", False) and not is_picture
+
+        arbiter_face = clamp(arbiter.deepfake_face_manipulation_score, 0.05, 0.92)
+        arbiter_visual = clamp(arbiter.ai_generated_visuals_score, 0.05, 0.92)
+        arbiter_voice = clamp(arbiter.voice_manipulation_score, 0.05, 0.92)
+
+        calibrated_face = clamp(visual_info.get("median_face_fake_score", 0.05), 0.05, 0.92)
+        raw_face = clamp(visual_info.get("p75_face_fake_score") or visual_info.get("average_face_fake_score", calibrated_face), 0.05, 0.92)
+        num_faces = visual_info.get("num_faces_detected", len(face_crop_paths))
+
+        calibrated_visual = clamp(visual_info.get("median_full_frame_fake_score", visual_info.get("trimmed_mean_fake_score", 0.05)), 0.05, 0.92)
+
+        raw_audio = clamp(audio_info.get("median_voice_clone_score", audio_info.get("average_voice_clone_score", 0.05)), 0.05, 0.92)
+        dubbed = cross_modal_info.get("lip_sync", {}).get("dubbed_voice_detected", False) and not is_picture
+        local_audio = 0.85 if dubbed else raw_audio
+
+        # Blending 70% Gemini / 30% Local Calibrated
+        if num_faces > 0:
+            final_face = clamp(0.70 * arbiter_face + 0.30 * calibrated_face, 0.05, 0.92)
+        else:
+            final_face = 0.05
+
+        final_visual = clamp(0.70 * arbiter_visual + 0.30 * calibrated_visual, 0.05, 0.92)
+
+        if has_audio:
+            final_audio = clamp(0.70 * arbiter_voice + 0.30 * local_audio, 0.05, 0.92)
+        else:
+            final_audio = 0.05
+
+        # Cross-modal risk
+        cap_mismatch = "Mismatch" in cross_modal_info.get("caption_alignment", {}).get("alignment_verdict", "")
+        cross_risk = 0.85 if dubbed else (0.45 if cap_mismatch else 0.10)
+
+        # Combined calculation
+        visual_peak = max(final_face, final_visual)
+        if visual_peak >= 0.65:
+            combined = clamp(0.85 * visual_peak + 0.15 * final_audio, 0.05, 0.92)
+        else:
+            combined = clamp(0.75 * visual_peak + 0.25 * final_audio, 0.05, 0.92)
+
+        # Diagnostic log line
+        diagnostic_line = (
+            f"[TRUTHLENS CALIBRATION] raw_face={raw_face:.2f} cal_face={calibrated_face:.2f} "
+            f"gemini_ok=True gemini_face={arbiter_face:.2f} gemini_visual={arbiter_visual:.2f} "
+            f"final_face={final_face:.2f} final_visual={final_visual:.2f} combined={combined:.2f}"
+        )
+        logger.info(diagnostic_line)
+        print(diagnostic_line, flush=True)
+
+        if combined >= 0.70 or visual_peak >= 0.70 or (has_audio and final_audio >= 0.70):
+            verdict = "MANIPULATED / DEEPFAKE"
+            conf = ConfidenceLevel.HIGH if (combined >= 0.75 or visual_peak >= 0.75) else ConfidenceLevel.MODERATE
+        elif combined < 0.45 and visual_peak < 0.45 and (not has_audio or final_audio < 0.45):
+            verdict = "AUTHENTIC / LIKELY REAL"
+            conf = ConfidenceLevel.HIGH if combined <= 0.25 else ConfidenceLevel.MODERATE
+        else:
+            verdict = "SUSPICIOUS / REVIEW RECOMMENDED"
+            conf = ConfidenceLevel.MODERATE
+
+        # Origin Assessment Breakdown
+        if final_face >= 0.70:
+            face_lvl = AssessmentLevel.HIGH
+            face_reason = arbiter.reasons_face_manipulation or f"Deepfake face manipulation detected (risk: {final_face:.2f})."
+        elif final_face >= 0.45:
+            face_lvl = AssessmentLevel.MODERATE
+            face_reason = arbiter.reasons_face_manipulation or f"Suspicious facial anomalies detected (risk: {final_face:.2f})."
+        else:
+            face_lvl = AssessmentLevel.LOW
+            face_reason = arbiter.reasons_face_manipulation or f"Natural facial skin texture and authentic facial features (risk: {final_face:.2f})."
+
+        if final_visual >= 0.70:
+            vis_lvl = AssessmentLevel.HIGH
+            vis_reason = arbiter.reasons_ai_visuals or f"Generative AI visual artifacts detected (risk: {final_visual:.2f})."
+        elif final_visual >= 0.45:
+            vis_lvl = AssessmentLevel.MODERATE
+            vis_reason = arbiter.reasons_ai_visuals or f"Moderate optical / texture anomalies detected (risk: {final_visual:.2f})."
+        else:
+            vis_lvl = AssessmentLevel.LOW
+            vis_reason = arbiter.reasons_ai_visuals or f"Natural grain structure and realistic camera optics (risk: {final_visual:.2f})."
+
+        if is_picture or not has_audio:
+            aud_lvl = AssessmentLevel.LOW
+            aud_reason = "Not applicable (media has no audio stream)."
+        elif final_audio >= 0.70 or dubbed:
+            aud_lvl = AssessmentLevel.HIGH
+            aud_reason = arbiter.reasons_voice_manipulation or ("Dubbed or synthetic voice clone detected." if dubbed else f"Synthetic vocal cues detected (risk: {final_audio:.2f}).")
+        elif final_audio >= 0.45:
+            aud_lvl = AssessmentLevel.MODERATE
+            aud_reason = arbiter.reasons_voice_manipulation or f"Borderline acoustic features detected (risk: {final_audio:.2f})."
+        else:
+            aud_lvl = AssessmentLevel.LOW
+            aud_reason = arbiter.reasons_voice_manipulation or f"Natural human vocal tract acoustics and cadence (risk: {final_audio:.2f})."
+
+        origin_assessment = MediaOriginAssessment(
+            deepfake_face_manipulation=AssessmentItem(indicator=face_lvl, reason=face_reason, score=final_face),
+            ai_generated_visuals=AssessmentItem(indicator=vis_lvl, reason=vis_reason, score=final_visual),
+            voice_manipulation_or_other_voice=AssessmentItem(indicator=aud_lvl, reason=aud_reason, score=final_audio)
         )
 
-        if not response.text:
-            raise ValueError("Empty response received from Gemini API.")
+        # Set alert_triggered = False whenever the overall verdict is AUTHENTIC / LIKELY REAL
+        if combined < 0.45 or verdict in ["AUTHENTIC / LIKELY REAL", "LIKELY AUTHENTIC"]:
+            alert_triggered = False
+        else:
+            alert_triggered = any(
+                item.indicator in [AssessmentLevel.MODERATE, AssessmentLevel.HIGH]
+                for item in [origin_assessment.deepfake_face_manipulation, origin_assessment.ai_generated_visuals, origin_assessment.voice_manipulation_or_other_voice]
+            )
 
-        report = ForensicReport.model_validate_json(response.text)
-        return report
+        flagged_evidence = []
+        for ind in arbiter.key_indicators:
+            flagged_evidence.append(FlaggedEvidenceItem(
+                modality=ModalityType.VISUAL.value,
+                timestamp_or_region="Inspection Target",
+                indicator="Forensic Finding",
+                reason=ind
+            ))
+
+        lip_str = cross_modal_info.get("lip_sync", {}).get("explanation", "Evaluated") if not is_picture else "Not applicable for static pictures."
+        cap_str = f"Verdict: {cross_modal_info.get('caption_alignment', {}).get('alignment_verdict', 'Evaluated')}."
+        scene_str = cross_modal_info.get("scene_consistency", {}).get("explanation", "Evaluated") if not is_picture else "Not applicable for static pictures."
+        trans_cap_str = "Speech transcript aligns with context." if has_audio else "Not applicable."
+
+        cross_modal = CrossModalFindings(
+            lip_sync=lip_str,
+            caption_vs_content=cap_str,
+            audio_vs_visual=scene_str,
+            transcript_vs_caption=trans_cap_str
+        )
+
+        limitations = [
+            "Lossy H.264/AAC recompression from Instagram/YouTube Reels alters high-frequency sensor noise.",
+            "EXIF metadata is automatically stripped by social media platforms upon upload."
+        ]
+        if not is_picture and audio_info.get("background_music_detected"):
+            limitations.append("Background music detected, which naturally suppresses subtle vocoder artifacts.")
+
+        human_checks = arbiter.recommended_human_checks or [
+            "Perform reverse image search (Google Lens, TinEye) to trace original source footage.",
+            "Inspect earlobes and hairline under high contrast for face-swap boundary halos."
+        ]
+
+        source_name = ingest_info.get("metadata", {}).get("source_url") or ingest_info.get("original_filename") or f"SHA256-{sha256_hash[:12]}"
+        draft_takedown = generate_draft_takedown_text(
+            source_identifier=source_name,
+            sha256_hash=sha256_hash,
+            verdict=verdict,
+            deepfake_probability=combined,
+            media_origin=origin_assessment,
+            flagged_evidence=flagged_evidence,
+            cross_modal=cross_modal,
+            limitations=limitations
+        )
+
+        local_visual = final_visual
+        local_audio = final_audio
+        local_cross = cross_risk
+
+        provenance, timeline, graph = build_investigation_enrichment(
+            sha256_hash=sha256_hash,
+            ingest_info=ingest_info,
+            visual_info=visual_info,
+            audio_info=audio_info,
+            cross_modal_info=cross_modal_info,
+            verdict=verdict,
+            combined_score=combined,
+            local_visual=local_visual,
+            local_audio=local_audio,
+            local_cross=local_cross
+        )
+
+        return ForensicReport(
+            sha256_hash=sha256_hash,
+            verdict=verdict,
+            deepfake_probability=combined,
+            confidence_level=conf,
+            summary=arbiter.forensic_summary,
+            media_origin_assessment=origin_assessment,
+            deepfake_alert_triggered=alert_triggered,
+            draft_takedown_report=draft_takedown,
+            flagged_evidence=flagged_evidence,
+            cross_modal_findings=cross_modal,
+            limitations_and_caveats=limitations,
+            recommended_human_checks=human_checks,
+            timeline_events=timeline,
+            provenance=provenance,
+            correlation_graph=graph,
+            arbiter_summary=arbiter.forensic_summary,
+            detection_screenshots=detection_screenshots or []
+        )
 
     def _local_heuristic_synthesis(
         self,
@@ -390,63 +907,55 @@ class Correlator:
         caption: Optional[str],
         flagged_frame_paths: List[str],
         face_crop_paths: List[str],
-        ela_heatmap_path: Optional[str]
+        ela_heatmap_path: Optional[str],
+        detection_screenshots: Optional[List[Dict[str, Any]]] = None
     ) -> ForensicReport:
         """
         Deterministic rule-based forensic aggregator fallback ensuring valid
-        ForensicReport output with calibrated 3-way media origin assessment.
+        ForensicReport output with calibrated 3-way media origin assessment, dominant modality risk (preventing dilution), and honest thresholds.
         """
         flagged_evidence: List[FlaggedEvidenceItem] = []
-        deepfake_scores: List[float] = []
-
         is_picture = (ingest_info.get("media_type") == "image")
 
         # 1. Visual Signals
-        avg_vis_fake = visual_info.get("average_fake_score", 0.0)
-        peak_vis_fake = visual_info.get("peak_fake_score", 0.0)
-        avg_face_fake = visual_info.get("average_face_fake_score", 0.0)
-        peak_face_fake = visual_info.get("peak_face_fake_score", 0.0)
-        flicker_score = visual_info.get("temporal_flicker_score", 0.0)
+        calibrated_face = clamp(visual_info.get("median_face_fake_score", 0.05), 0.05, 0.92)
+        raw_face = clamp(visual_info.get("p75_face_fake_score") or visual_info.get("average_face_fake_score", calibrated_face), 0.05, 0.92)
+        num_faces = visual_info.get("num_faces_detected", len(face_crop_paths))
+        calibrated_visual = clamp(visual_info.get("median_full_frame_fake_score", visual_info.get("trimmed_mean_fake_score", 0.05)), 0.05, 0.92)
+        flicker_score = clamp(visual_info.get("temporal_flicker_score", 0.0), 0.0, 1.0)
 
-        deepfake_scores.append(avg_vis_fake)
-
-        if peak_face_fake >= 0.60:
+        if num_faces > 0 and calibrated_face >= 0.70:
             flagged_evidence.append(FlaggedEvidenceItem(
                 modality=ModalityType.VISUAL.value,
                 timestamp_or_region="Cropped Facial Region",
                 indicator="ViT Face-Swap Artifacts",
-                reason=f"Targeted facial crop classifier flagged synthetic manipulation cues with confidence {peak_face_fake:.2f}."
+                reason=f"Targeted facial crop classifier flagged synthetic manipulation cues (calibrated risk: {calibrated_face:.2f})."
             ))
 
-        if not is_picture and flicker_score >= 0.55:
+        if not is_picture and flicker_score >= 0.65:
             flagged_evidence.append(FlaggedEvidenceItem(
                 modality=ModalityType.VISUAL.value,
                 timestamp_or_region="Inter-frame Keyframes",
                 indicator="Temporal Flickering / Morphing Geometry",
-                reason=f"Elevated temporal instability (flicker score {flicker_score:.2f}) indicates potential AI-generated video generation (Sora/Runway/Kling)."
+                reason=f"Elevated temporal instability (flicker score {flicker_score:.2f}) indicates potential AI-generated video generation."
             ))
 
         # ELA findings
         ela = visual_info.get("ela_result") or {}
-        ela_score = ela.get("tampering_suspicion_score", 0.0)
-        if ela_score > 0.65:
-            deepfake_scores.append(ela_score)
+        ela_score = normalize_prob(ela.get("tampering_suspicion_score", 0.0))
+        if ela_score > 0.70:
             flagged_evidence.append(FlaggedEvidenceItem(
                 modality=ModalityType.VISUAL.value,
                 timestamp_or_region="Spatial Heatmap Anomaly",
                 indicator="Error Level Analysis (ELA) Compression Inconsistency",
-                reason=f"Localized variance discrepancy ({ela.get('error_variance', 0)}) detected, indicating regional splicing."
+                reason=f"Localized variance discrepancy ({ela.get('error_variance', 0)}) detected, indicating regional editing."
             ))
 
         # 2. Audio Signals (skip if picture)
         has_audio = audio_info.get("has_audio", False) and not is_picture
-        avg_aud_fake = 0.0
-        peak_aud_fake = 0.0
-        if has_audio:
-            avg_aud_fake = audio_info.get("average_voice_clone_score", 0.0)
-            peak_aud_fake = audio_info.get("peak_voice_clone_score", 0.0)
-            deepfake_scores.append(avg_aud_fake)
+        raw_audio = clamp(audio_info.get("median_voice_clone_score", audio_info.get("average_voice_clone_score", 0.05)), 0.05, 0.92) if has_audio else 0.05
 
+        if has_audio:
             for spike in audio_info.get("synthetic_voice_spikes", []):
                 flagged_evidence.append(FlaggedEvidenceItem(
                     modality=ModalityType.AUDIO.value,
@@ -460,9 +969,7 @@ class Correlator:
         caption_align = cross_modal_info.get("caption_alignment") or {}
         scene_cons = cross_modal_info.get("scene_consistency") or {}
 
-        # Dubbed voice check (video only)
         dubbed_detected = lip_sync.get("dubbed_voice_detected", False) and not is_picture
-        lip_corr = lip_sync.get("correlation_score")
         if dubbed_detected:
             flagged_evidence.append(FlaggedEvidenceItem(
                 modality=ModalityType.CROSS_MODAL.value,
@@ -471,7 +978,6 @@ class Correlator:
                 reason=lip_sync.get("explanation", "Speech audio plays while visible mouth does not articulate corresponding words.")
             ))
 
-        # Caption alignment
         cap_verdict = caption_align.get("alignment_verdict", "")
         if "Mismatch" in cap_verdict:
             flagged_evidence.append(FlaggedEvidenceItem(
@@ -481,100 +987,104 @@ class Correlator:
                 reason=f"CLIP similarity ({caption_align.get('max_similarity', 0.0):.2f}) indicates visual content does not substantiate post caption."
             ))
 
-        # Scene consistency (video with audio only)
-        if not is_picture and scene_cons.get("mismatch_detected", False):
-            flagged_evidence.append(FlaggedEvidenceItem(
-                modality=ModalityType.CROSS_MODAL.value,
-                timestamp_or_region="Acoustic Background vs Visual Scene",
-                indicator="Environmental Inconsistency (AST vs CLIP)",
-                reason=scene_cons.get("explanation", "Discrepancy detected between background audio tags and visual setting.")
-            ))
+        local_cross = 0.85 if dubbed_detected else (0.45 if "Mismatch" in cap_verdict else 0.10)
 
-        # Calibrate 3-Way Media Origin Assessment
-        # 1. Deepfake Face Manipulation
-        if peak_face_fake >= 0.65 or avg_face_fake >= 0.55:
+        # Modality final scores for fallback
+        if num_faces > 0:
+            final_face = calibrated_face
+        else:
+            final_face = 0.05
+
+        final_visual = calibrated_visual
+        final_audio = 0.85 if dubbed_detected else (raw_audio if has_audio else 0.05)
+
+        # Combined score computation
+        visual_peak = max(final_face, final_visual)
+        if visual_peak >= 0.65:
+            combined_prob = clamp(0.85 * visual_peak + 0.15 * final_audio, 0.05, 0.92)
+        else:
+            combined_prob = clamp(0.75 * visual_peak + 0.25 * final_audio, 0.05, 0.92)
+
+        diagnostic_line = (
+            f"[TRUTHLENS CALIBRATION] raw_face={raw_face:.2f} cal_face={calibrated_face:.2f} "
+            f"gemini_ok=False gemini_face=0.00 gemini_visual=0.00 "
+            f"final_face={final_face:.2f} final_visual={final_visual:.2f} combined={combined_prob:.2f}"
+        )
+        logger.info(diagnostic_line)
+        print(diagnostic_line, flush=True)
+
+        # Calibrated 3-Way Media Origin Assessment (< 0.45 -> LOW, 0.45-0.69 -> MODERATE, >= 0.70 -> HIGH)
+        if final_face >= 0.70:
             face_indicator = AssessmentLevel.HIGH
-            face_reason = f"Cropped face classifier detected synthetic face-swap artifacts with peak confidence {peak_face_fake:.2f}."
-        elif peak_face_fake >= 0.45 or (not is_picture and lip_corr is not None and lip_corr < 0.10 and not dubbed_detected):
+            face_reason = f"Face crop classifier flagged synthetic manipulation cues (risk: {final_face:.2f})."
+        elif final_face >= 0.45:
             face_indicator = AssessmentLevel.MODERATE
-            face_reason = f"Borderline facial characteristics detected (peak confidence {peak_face_fake:.2f})."
+            face_reason = f"Borderline facial characteristics detected across sampled keyframes (risk: {final_face:.2f})."
         else:
             face_indicator = AssessmentLevel.LOW
-            face_reason = "No distinctive face-swap seams, facial blending halos, or anomalous facial ViT patterns detected."
+            face_reason = f"No consistent face-swap seams, facial blending halos, or anomalous facial ViT patterns detected (risk: {final_face:.2f})."
 
-        # 2. AI Generated Visuals
-        if (not is_picture and flicker_score >= 0.65) or (avg_vis_fake >= 0.65 and avg_face_fake < 0.40):
+        if (not is_picture and flicker_score >= 0.70) or final_visual >= 0.70:
             visual_indicator = AssessmentLevel.HIGH
-            visual_reason = f"High structural anomalies and synthetic visual indicators suggest content was generated by an AI model."
-        elif (not is_picture and flicker_score >= 0.40) or avg_vis_fake >= 0.50 or ela_score > 0.60:
+            visual_reason = f"Structural anomalies, morphing geometry, or elevated synthetic visual probability detected (risk: {final_visual:.2f})."
+        elif final_visual >= 0.45:
             visual_indicator = AssessmentLevel.MODERATE
-            visual_reason = "Moderate visual variance or localized compression discrepancy observed; possible generative post-processing or AI editing."
+            visual_reason = f"Moderate visual variance or localized compression discrepancy observed (risk: {final_visual:.2f})."
         else:
             visual_indicator = AssessmentLevel.LOW
-            visual_reason = "Natural grain structure, continuous optical geometry, and realistic boundary textures consistent with camera optics."
+            visual_reason = f"Natural grain structure, continuous optical geometry, and realistic boundary textures (risk: {final_visual:.2f})."
 
-        # 3. Voice Manipulation / Other Voice
         if is_picture or not has_audio:
             voice_indicator = AssessmentLevel.LOW
             voice_reason = "Not applicable (media contains no audio stream)."
-        elif dubbed_detected or peak_aud_fake >= 0.70:
+        elif dubbed_detected:
             voice_indicator = AssessmentLevel.HIGH
-            if dubbed_detected and peak_aud_fake >= 0.65:
-                voice_reason = f"Both synthetic voice patterns (confidence {peak_aud_fake:.2f}) and speech-mouth desynchronization detected."
-            elif dubbed_detected:
-                voice_reason = "Speech audio plays while the visible person's mouth is static/closed (voiceover or dubbed speech from another speaker)."
-            else:
-                voice_reason = f"Wav2Vec2 voice clone classifier detected synthetic vocoder patterns with peak confidence {peak_aud_fake:.2f}."
-        elif peak_aud_fake >= 0.45 or (lip_corr is not None and lip_corr < 0.20):
+            voice_reason = "Speech audio plays while the visible person's mouth is static/closed (voiceover or dubbed speech from another speaker)."
+        elif final_audio >= 0.70:
+            voice_indicator = AssessmentLevel.HIGH
+            voice_reason = f"Wav2Vec2 voice clone classifier detected synthetic vocoder patterns (risk: {final_audio:.2f})."
+        elif final_audio >= 0.45:
             voice_indicator = AssessmentLevel.MODERATE
-            voice_reason = "Slight acoustic cadential divergence or borderline voice clone probability detected."
+            voice_reason = f"Slight acoustic cadential divergence or borderline voice clone probability detected (risk: {final_audio:.2f})."
         else:
             voice_indicator = AssessmentLevel.LOW
-            voice_reason = "Acoustic vocal micro-features and speech dynamics show normal human vocal tract acoustics."
+            voice_reason = f"Acoustic vocal micro-features and speech dynamics show normal human vocal tract acoustics (risk: {final_audio:.2f})."
 
-        media_origin = MediaOriginAssessment(
-            deepfake_face_manipulation=AssessmentItem(indicator=face_indicator, reason=face_reason),
-            ai_generated_visuals=AssessmentItem(indicator=visual_indicator, reason=visual_reason),
-            voice_manipulation_or_other_voice=AssessmentItem(indicator=voice_indicator, reason=voice_reason)
+        origin_assessment = MediaOriginAssessment(
+            deepfake_face_manipulation=AssessmentItem(indicator=face_indicator, reason=face_reason, score=final_face),
+            ai_generated_visuals=AssessmentItem(indicator=visual_indicator, reason=visual_reason, score=final_visual),
+            voice_manipulation_or_other_voice=AssessmentItem(indicator=voice_indicator, reason=voice_reason, score=final_audio)
         )
 
-        # Determine if deepfake alert is triggered
-        alert_triggered = any(
-            item.indicator in [AssessmentLevel.MODERATE, AssessmentLevel.HIGH]
-            for item in [media_origin.deepfake_face_manipulation, media_origin.ai_generated_visuals, media_origin.voice_manipulation_or_other_voice]
-        )
-
-        # Aggregate overall probability
-        if deepfake_scores:
-            aggregated_prob = float(min(1.0, max(0.0, np.mean(deepfake_scores) * 0.5 + max(deepfake_scores) * 0.5)))
+        if combined_prob >= 0.70 or visual_peak >= 0.70 or (has_audio and final_audio >= 0.70):
+            verdict = "MANIPULATED / DEEPFAKE"
+            conf = ConfidenceLevel.HIGH if (combined_prob >= 0.75 or visual_peak >= 0.75) else ConfidenceLevel.MODERATE
+        elif combined_prob < 0.45 and visual_peak < 0.45 and (not has_audio or final_audio < 0.45):
+            verdict = "AUTHENTIC / LIKELY REAL"
+            conf = ConfidenceLevel.HIGH if combined_prob <= 0.25 else ConfidenceLevel.MODERATE
         else:
-            aggregated_prob = 0.1
+            verdict = "SUSPICIOUS / REVIEW RECOMMENDED"
+            conf = ConfidenceLevel.MODERATE
 
-        # Verdict
-        if face_indicator == AssessmentLevel.HIGH or visual_indicator == AssessmentLevel.HIGH or (voice_indicator == AssessmentLevel.HIGH and peak_aud_fake >= 0.70):
-            verdict = "Manipulated / Deepfake"
-            conf = ConfidenceLevel.HIGH if len(flagged_evidence) >= 2 else ConfidenceLevel.MODERATE
-        elif voice_indicator == AssessmentLevel.HIGH and dubbed_detected:
-            verdict = "Dubbed Voiceover / Mismatched Audio"
-            conf = ConfidenceLevel.HIGH
-        elif "Mismatch" in cap_verdict:
-            verdict = "Out-of-Context Misinformation"
-            conf = ConfidenceLevel.MODERATE
-        elif alert_triggered or aggregated_prob >= 0.40:
-            verdict = "Suspicious / Inconclusive"
-            conf = ConfidenceLevel.MODERATE
+        # Alert triggered strictly False if overall verdict is authentic (< 0.45)
+        if combined_prob < 0.45 or verdict in ["AUTHENTIC / LIKELY REAL", "LIKELY AUTHENTIC"]:
+            alert_triggered = False
         else:
-            verdict = "Likely Authentic"
-            conf = ConfidenceLevel.HIGH if (has_audio and len(visual_info.get("frame_predictions", [])) >= 5) else ConfidenceLevel.MODERATE
+            alert_triggered = any(
+                item.indicator in [AssessmentLevel.MODERATE, AssessmentLevel.HIGH]
+                for item in [origin_assessment.deepfake_face_manipulation, origin_assessment.ai_generated_visuals, origin_assessment.voice_manipulation_or_other_voice]
+            )
 
-        # Speech transcript comparison
+        local_visual = final_visual
+        local_audio = final_audio
+
         transcript_text = audio_info.get("full_transcript", "")
         if is_picture:
             lip_sync_str = "Not applicable for static pictures."
             audio_scene_str = "Not applicable for static pictures."
             trans_vs_cap = "Not applicable (static image without speech audio)."
         else:
-            lip_sync_str = lip_sync.get("explanation", "Lip-sync correlation was not evaluable.")
+            lip_sync_str = lip_sync.get("explanation", "Lip-sync correlation evaluated.")
             audio_scene_str = scene_cons.get("explanation", "Scene consistency evaluation completed.")
             if caption and transcript_text and transcript_text != "No audio stream detected in media file.":
                 trans_vs_cap = f"Speech discusses: '{transcript_text[:100]}...' compared to caption: '{caption[:100]}...'."
@@ -589,24 +1099,24 @@ class Correlator:
         )
 
         summary = (
-            f"Forensic analysis of media (SHA-256: {sha256_hash[:12]}...) yielded an aggregated "
-            f"manipulation score of {aggregated_prob:.2f} resulting in verdict '{verdict}'. "
-            f"Origin assessment: Face Manipulation={face_indicator.value}, AI Visuals={visual_indicator.value}, "
-            f"Voice/Dubbing={voice_indicator.value}. Alert Triggered={alert_triggered}."
+            f"Multi-modal forensic evaluation of media (SHA-256: {sha256_hash[:12]}...) "
+            f"yielded an aggregate manipulation probability of {combined_prob * 100:.1f}%, resulting in verdict '{verdict}'. "
+            f"Assessment breakdown: Face Manipulation: {face_indicator.value} ({face_reason}); "
+            f"AI Visual Generation: {visual_indicator.value} ({visual_reason}); "
+            f"Voice/Dubbing Dynamics: {voice_indicator.value} ({voice_reason})."
         )
 
         limitations = [
             "Instagram/YouTube Reels re-encode media to H.264/AAC and strip original camera EXIF metadata upon upload, which is standard platform behavior.",
             "Compression artifacts and motion blur from fast social video cuts can introduce localized high-frequency pixel noise."
         ]
-
         if not is_picture and (audio_info.get("background_music_detected", False) or scene_cons.get("music_detected", False)):
             limitations.append(
                 "Prominent background music detected across audio track, which can suppress vocal micro-features and affect voice clone classification certainty."
             )
 
         human_checks = [
-            "Perform reverse image search (Google Lens, TinEye, Yandex) on keyframes to locate the earliest publication timestamp and original context.",
+            "Perform reverse image search (Google Lens, TinEye, Yandex) on keyframes to locate earliest publication context.",
             "Inspect high-frequency facial boundaries, earlobes, and teeth under contrast enhancement for face-swap blending seams.",
             "Cross-reference speaker voice timbre against verified authentic audio recordings of the claimed individual."
         ]
@@ -616,24 +1126,42 @@ class Correlator:
             source_identifier=source_name,
             sha256_hash=sha256_hash,
             verdict=verdict,
-            deepfake_probability=aggregated_prob,
-            media_origin=media_origin,
+            deepfake_probability=combined_prob,
+            media_origin=origin_assessment,
             flagged_evidence=flagged_evidence,
             cross_modal=cross_modal_findings,
             limitations=limitations
         )
 
+        provenance, timeline, graph = build_investigation_enrichment(
+            sha256_hash=sha256_hash,
+            ingest_info=ingest_info,
+            visual_info=visual_info,
+            audio_info=audio_info,
+            cross_modal_info=cross_modal_info,
+            verdict=verdict,
+            combined_score=combined_prob,
+            local_visual=local_visual,
+            local_audio=local_audio,
+            local_cross=local_cross
+        )
+
         return ForensicReport(
             sha256_hash=sha256_hash,
             verdict=verdict,
-            deepfake_probability=round(aggregated_prob, 3),
+            deepfake_probability=combined_prob,
             confidence_level=conf,
             summary=summary,
-            media_origin_assessment=media_origin,
+            media_origin_assessment=origin_assessment,
             deepfake_alert_triggered=alert_triggered,
             draft_takedown_report=draft_takedown,
             flagged_evidence=flagged_evidence,
             cross_modal_findings=cross_modal_findings,
             limitations_and_caveats=limitations,
-            recommended_human_checks=human_checks
+            recommended_human_checks=human_checks,
+            timeline_events=timeline,
+            provenance=provenance,
+            correlation_graph=graph,
+            arbiter_summary=summary,
+            detection_screenshots=detection_screenshots or []
         )

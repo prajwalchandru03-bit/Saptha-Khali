@@ -3,9 +3,22 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>TruthLens — Multimodal Digital Forensics & Deepfake Detection</title>
+  <title>TruthLens — Multimodal Forensic & Deepfake Detection Engine</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%2314b8a6'><path d='M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5'/></svg>">
+
+  <!-- Tailwind CSS CDN -->
   <script src="https://cdn.tailwindcss.com"></script>
+  <!-- FontAwesome 6 -->
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+  <!-- Vis-Network for Correlation Graphs -->
+  <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+  <!-- Chart.js for Overview Analytics -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <!-- Marked.js for Assistant Markdown Parsing -->
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <!-- html2pdf for Forensic Dossier Export -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+
   <script>
     tailwind.config = {
       darkMode: 'class',
@@ -29,1243 +42,1088 @@
       }
     }
   </script>
+
   <style>
     @media print {
       body { background: white !important; color: black !important; }
-      header, .no-print, #inputSection, #progressSection, #toastContainer, #incidentsModal, #reportModal { display: none !important; }
-      #reportSection { display: block !important; padding: 0 !important; margin: 0 !important; width: 100% !important; }
+      #mainSidebar, header, .no-print, #assistantDrawer, #assistantBackdrop, #loadingModal, #incidentReportModal, #toastContainer {
+        display: none !important;
+      }
+      #view-dossier { display: block !important; padding: 0 !important; width: 100% !important; }
       .bg-dark-900, .bg-dark-850, .bg-dark-800 { background: #f8fafc !important; color: #0f172a !important; border-color: #cbd5e1 !important; }
-      .text-slate-300, .text-slate-400 { color: #334155 !important; }
       .text-white { color: #0f172a !important; }
-      .border-slate-800 { border-color: #e2e8f0 !important; }
+      .text-slate-300, .text-slate-400 { color: #334155 !important; }
     }
-    .scrollbar-thin::-webkit-scrollbar { width: 6px; height: 6px; }
+    .scrollbar-thin::-webkit-scrollbar { width: 5px; height: 5px; }
     .scrollbar-thin::-webkit-scrollbar-track { background: #0f172a; }
-    .scrollbar-thin::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+    .scrollbar-thin::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
   </style>
 </head>
-<body class="bg-dark-950 text-slate-100 min-h-screen flex flex-col font-sans antialiased selection:bg-cyan-500 selection:text-white">
+
+<body class="bg-dark-950 text-slate-100 min-h-screen flex flex-col lg:flex-row font-sans antialiased selection:bg-cyan-500 selection:text-white">
 
   <!-- ============================================================================== -->
-  <!-- Header / Navigation Bar -->
+  <!-- Left Navigation Sidebar (7 Views) -->
   <!-- ============================================================================== -->
-  <header class="border-b border-slate-800/80 bg-dark-900/90 backdrop-blur sticky top-0 z-40 px-4 lg:px-8 py-3.5">
-    <div class="max-w-7xl mx-auto flex items-center justify-between">
+  <aside id="mainSidebar" class="w-64 bg-dark-900 border-r border-slate-800/80 flex flex-col justify-between fixed lg:sticky top-0 h-screen z-40 transition-transform duration-300 -translate-x-full lg:translate-x-0 shrink-0">
+    <div class="p-5 space-y-6">
+      <!-- Logo Branding -->
       <div class="flex items-center space-x-3">
-        <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-cyan-500 via-teal-500 to-indigo-600 flex items-center justify-center shadow-lg shadow-cyan-500/20">
+        <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-cyan-500 via-teal-500 to-indigo-600 flex items-center justify-center shadow-lg shadow-cyan-500/20 shrink-0">
           <i class="fa-solid fa-shield-halved text-white text-lg"></i>
         </div>
-        <div>
-          <div class="flex items-center space-x-2">
-            <span class="font-extrabold text-xl tracking-tight bg-gradient-to-r from-white via-slate-100 to-cyan-400 bg-clip-text text-transparent">TruthLens</span>
-            <span class="text-[10px] font-bold uppercase tracking-widest px-2 py-0.5 rounded-full bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">Forensics v1.2</span>
+        <div class="overflow-hidden">
+          <div class="flex items-center space-x-1.5">
+            <span class="font-black text-lg tracking-tight bg-gradient-to-r from-white via-slate-100 to-cyan-400 bg-clip-text text-transparent">TruthLens</span>
+            <span class="text-[9px] font-bold uppercase tracking-widest px-1.5 py-0.2 rounded-full bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">v1.2</span>
           </div>
-          <p class="text-xs text-slate-400">Multimodal Deepfake, AI-Video & Voice Clone Detection Engine</p>
+          <p class="text-[10px] text-slate-400 truncate">Multimodal Forensics Engine</p>
+        </div>
+      </div>
+
+      <!-- Navigation Menu -->
+      <nav class="space-y-1.5">
+        <p class="text-[10px] uppercase font-bold tracking-wider text-slate-500 px-3 pb-1">Workspaces</p>
+
+        <!-- View 1: Overview -->
+        <button data-nav-target="view-overview" class="flex items-center space-x-3 px-3.5 py-2.5 rounded-xl bg-cyan-500/10 text-cyan-400 font-semibold border border-cyan-500/20 text-xs transition w-full text-left">
+          <i class="fa-solid fa-chart-pie w-4 text-center"></i>
+          <span>Overview</span>
+        </button>
+
+        <!-- View 2: Direct Upload -->
+        <button data-nav-target="view-upload" class="flex items-center space-x-3 px-3.5 py-2.5 rounded-xl text-slate-400 hover:text-slate-200 hover:bg-slate-800/50 font-medium text-xs transition w-full text-left">
+          <i class="fa-solid fa-cloud-arrow-up w-4 text-center text-cyan-400"></i>
+          <span>Direct Media Upload</span>
+        </button>
+
+        <!-- View 3: Social Media Scanner -->
+        <button data-nav-target="view-scanner" class="flex items-center space-x-3 px-3.5 py-2.5 rounded-xl text-slate-400 hover:text-slate-200 hover:bg-slate-800/50 font-medium text-xs transition w-full text-left">
+          <i class="fa-solid fa-hashtag w-4 text-center text-rose-400"></i>
+          <span>Social Media Scanner</span>
+        </button>
+
+        <!-- View 4: Compare Real vs. AI -->
+        <button data-nav-target="view-compare" class="flex items-center space-x-3 px-3.5 py-2.5 rounded-xl text-slate-400 hover:text-slate-200 hover:bg-slate-800/50 font-medium text-xs transition w-full text-left">
+          <i class="fa-solid fa-code-compare w-4 text-center text-amber-400"></i>
+          <span>Compare Real vs. AI</span>
+        </button>
+
+        <!-- View 5: Text Forensics -->
+        <button data-nav-target="view-text" class="flex items-center space-x-3 px-3.5 py-2.5 rounded-xl text-slate-400 hover:text-slate-200 hover:bg-slate-800/50 font-medium text-xs transition w-full text-left">
+          <i class="fa-solid fa-file-lines w-4 text-center text-purple-400"></i>
+          <span>Text Forensics</span>
+        </button>
+
+        <!-- View 6: History & Incidents -->
+        <button data-nav-target="view-history" class="flex items-center space-x-3 px-3.5 py-2.5 rounded-xl text-slate-400 hover:text-slate-200 hover:bg-slate-800/50 font-medium text-xs transition w-full text-left">
+          <i class="fa-solid fa-clock-rotate-left w-4 text-center text-emerald-400"></i>
+          <span>History & Incidents</span>
+        </button>
+
+        <!-- View 7: Model Reliability -->
+        <button data-nav-target="view-models" class="flex items-center space-x-3 px-3.5 py-2.5 rounded-xl text-slate-400 hover:text-slate-200 hover:bg-slate-800/50 font-medium text-xs transition w-full text-left">
+          <i class="fa-solid fa-microchip w-4 text-center text-indigo-400"></i>
+          <span>Model Reliability & Status</span>
+        </button>
+      </nav>
+
+      <!-- Active Dossier Shortcut -->
+      <div class="pt-2 border-t border-slate-800">
+        <button data-nav-target="view-dossier" class="flex items-center space-x-3 px-3.5 py-2.5 rounded-xl bg-slate-800/60 hover:bg-slate-800 text-slate-300 font-medium text-xs transition w-full text-left border border-slate-700/60">
+          <i class="fa-solid fa-folder-open text-cyan-400 w-4 text-center"></i>
+          <span class="truncate">Active Dossier</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- Sidebar Bottom Status Footer -->
+    <div class="p-4 border-t border-slate-800 bg-dark-950/60">
+      <div class="flex items-center justify-between text-[11px]">
+        <div class="flex items-center space-x-2">
+          <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+          <span class="text-slate-300 font-medium">Models Online</span>
+        </div>
+        <span class="text-[10px] text-slate-500 font-mono">CPU / API</span>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ============================================================================== -->
+  <!-- Main Content Viewport -->
+  <!-- ============================================================================== -->
+  <div class="flex-1 flex flex-col min-h-screen overflow-x-hidden">
+
+    <!-- Top Header Bar -->
+    <header class="border-b border-slate-800 bg-dark-900/90 backdrop-blur sticky top-0 z-30 px-4 lg:px-8 py-3.5 flex items-center justify-between">
+      <div class="flex items-center space-x-3">
+        <button id="mobileMenuBtn" class="lg:hidden p-2 rounded-lg bg-slate-800 text-slate-300 text-sm">
+          <i class="fa-solid fa-bars"></i>
+        </button>
+        <div>
+          <span class="text-xs font-bold text-slate-200">TruthLens Forensic Investigation Suite</span>
+          <span class="text-[10px] text-slate-400 hidden sm:inline ml-2">• 60% Arbiter / 40% Local Calibrated Fusion</span>
         </div>
       </div>
 
       <div class="flex items-center space-x-3">
-        <button id="openIncidentsBtn" class="px-3.5 py-1.5 rounded-lg bg-slate-800/80 hover:bg-slate-700/80 border border-slate-700 text-xs font-medium text-slate-200 transition flex items-center space-x-2">
-          <i class="fa-solid fa-flag text-rose-400"></i>
-          <span>Reported Incidents</span>
-          <span id="incidentsCountBadge" class="ml-1 px-1.5 py-0.2 rounded-full bg-rose-500/20 text-rose-300 text-[10px] font-semibold">0</span>
-        </button>
-        <button id="openHistoryBtn" class="px-3 py-1.5 rounded-lg bg-slate-800/80 hover:bg-slate-700/80 border border-slate-700 text-xs font-medium text-slate-200 transition flex items-center space-x-1.5">
-          <i class="fa-solid fa-clock-rotate-left text-cyan-400"></i>
-          <span>History</span>
+        <!-- Open AI Assistant Button -->
+        <button id="openAssistantBtn" class="px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-cyan-500/20 to-teal-500/20 hover:from-cyan-500/30 hover:to-teal-500/30 text-cyan-300 border border-cyan-500/30 text-xs font-semibold flex items-center space-x-2 transition shadow-sm">
+          <i class="fa-solid fa-robot text-cyan-400 animate-pulse"></i>
+          <span>AI Forensic Assistant</span>
         </button>
       </div>
-    </div>
-  </header>
+    </header>
 
-  <!-- ============================================================================== -->
-  <!-- Main Container -->
-  <!-- ============================================================================== -->
-  <main class="flex-1 max-w-7xl w-full mx-auto p-4 lg:p-8 space-y-8">
+    <!-- Main Workspace Container -->
+    <main class="flex-1 p-4 lg:p-8 max-w-7xl w-full mx-auto space-y-8">
 
-    <!-- Hero / Info Banner -->
-    <div class="relative overflow-hidden rounded-2xl bg-gradient-to-r from-dark-900 via-dark-850 to-slate-900 border border-slate-800 p-6 shadow-xl">
-      <div class="relative z-10 max-w-3xl">
-        <h1 class="text-2xl sm:text-3xl font-bold tracking-tight text-white mb-2">Multimodal Social Media Verification</h1>
-        <p class="text-sm text-slate-300 leading-relaxed">
-          Verify Instagram Reels, YouTube Shorts, or uploaded pictures and videos across three distinct vectors:
-          <strong class="text-cyan-400 font-semibold">Deepfake Face Swaps</strong>,
-          <strong class="text-teal-400 font-semibold">Generative AI Video / Pictures</strong>, and
-          <strong class="text-indigo-400 font-semibold">Synthetic Voice Clones / Other-Voice Dubbing</strong>.
-        </p>
-      </div>
-    </div>
-
-    <!-- ============================================================================== -->
-    <!-- Input Section: Two Clean Tabs -->
-    <!-- ============================================================================== -->
-    <section id="inputSection" class="bg-dark-900 rounded-2xl border border-slate-800 p-6 shadow-xl">
-      <!-- Tabs Selector -->
-      <div class="flex border-b border-slate-800 mb-6">
-        <button id="tabUploadBtn" class="flex items-center space-x-2 py-3 px-5 text-sm font-semibold border-b-2 border-cyan-400 text-cyan-400 transition">
-          <i class="fa-solid fa-cloud-arrow-up"></i>
-          <span>Attach Video or Picture</span>
-        </button>
-        <button id="tabUrlBtn" class="flex items-center space-x-2 py-3 px-5 text-sm font-medium border-b-2 border-transparent text-slate-400 hover:text-slate-200 transition">
-          <i class="fa-brands fa-instagram text-rose-400"></i>
-          <span>Instagram / YouTube Link</span>
-        </button>
-      </div>
-
-      <!-- Tab 1: Upload File -->
-      <div id="tabUploadContent" class="space-y-4">
-        <div id="dropZone" class="border-2 border-dashed border-slate-700 hover:border-cyan-500/70 bg-dark-850/60 rounded-xl p-8 text-center cursor-pointer transition flex flex-col items-center justify-center space-y-3">
-          <div class="w-14 h-14 rounded-full bg-cyan-500/10 flex items-center justify-center text-cyan-400 text-2xl">
-            <i class="fa-solid fa-file-arrow-up"></i>
-          </div>
-          <div>
-            <p class="text-sm font-semibold text-slate-200">Drag and drop video, picture, or audio here</p>
-            <p class="text-xs text-slate-400 mt-1">Supports MP4, MOV, WEBM, JPG, PNG, WEBP, MP3, WAV (up to 100MB)</p>
-          </div>
-          <button type="button" class="px-4 py-2 rounded-lg bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 text-xs font-semibold border border-cyan-500/30 transition">
-            Browse Files
-          </button>
-          <input type="file" id="fileInput" class="hidden" accept="video/mp4,video/quicktime,video/webm,image/jpeg,image/png,image/webp,audio/mpeg,audio/wav">
-        </div>
-
-        <!-- Instant File Preview -->
-        <div id="previewContainer" class="hidden bg-dark-850 rounded-xl p-4 border border-slate-800 flex flex-col sm:flex-row items-center space-y-3 sm:space-y-0 sm:space-x-4">
-          <div id="previewMediaWrapper" class="w-full sm:w-48 h-36 rounded-lg overflow-hidden bg-black flex items-center justify-center border border-slate-700">
-            <!-- Dynamic img or video element inserted here -->
-          </div>
-          <div class="flex-1 w-full text-left space-y-1">
-            <div class="flex items-center justify-between">
-              <span id="previewFileName" class="text-sm font-semibold text-white truncate max-w-[200px] sm:max-w-xs">filename.mp4</span>
-              <button id="clearFileBtn" class="text-xs text-rose-400 hover:text-rose-300 transition">
-                <i class="fa-solid fa-trash-can"></i> Remove
-              </button>
-            </div>
-            <p id="previewFileSize" class="text-xs text-slate-400">0.0 MB</p>
-            <span id="previewMediaType" class="inline-block text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded bg-slate-700 text-slate-300">Video</span>
-          </div>
-        </div>
-
-        <!-- Optional Caption -->
-        <div>
-          <label class="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1.5">Social Media Caption / Claim (Optional)</label>
-          <textarea id="uploadCaption" rows="2" class="w-full rounded-xl bg-dark-850 border border-slate-800 focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 px-3.5 py-2 text-sm text-slate-200 placeholder-slate-500 outline-none transition" placeholder="e.g. Breaking news claims official press statement..."></textarea>
-        </div>
-
-        <button id="analyzeUploadBtn" class="w-full py-3.5 rounded-xl bg-gradient-to-r from-cyan-500 to-teal-500 hover:from-cyan-400 hover:to-teal-400 text-white font-semibold text-sm shadow-lg shadow-cyan-500/20 transition flex items-center justify-center space-x-2">
-          <i class="fa-solid fa-magnifying-glass"></i>
-          <span>Execute Multimodal Analysis</span>
-        </button>
-      </div>
-
-      <!-- Tab 2: URL Link -->
-      <div id="tabUrlContent" class="hidden space-y-4">
-        <div>
-          <label class="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1.5">Instagram Reel / Post or YouTube URL</label>
-          <div class="relative">
-            <span class="absolute inset-y-0 left-0 pl-3.5 flex items-center text-slate-500 pointer-events-none">
-              <i class="fa-solid fa-link"></i>
-            </span>
-            <input type="url" id="mediaUrl" class="w-full pl-10 pr-4 py-3 rounded-xl bg-dark-850 border border-slate-800 focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 text-sm text-slate-200 placeholder-slate-500 outline-none transition" placeholder="https://www.instagram.com/reel/C... or https://youtube.com/shorts/...">
-          </div>
-          <p class="text-[11px] text-slate-400 mt-1 flex items-center space-x-1">
-            <i class="fa-solid fa-circle-info text-cyan-400"></i>
-            <span>Tip: If Instagram requires login or rate-limits a Reel, download the MP4 and attach it in Tab 1 for immediate processing.</span>
+      <!-- ========================================================================== -->
+      <!-- VIEW 1: OVERVIEW -->
+      <!-- ========================================================================== -->
+      <section id="view-overview" class="truthlens-view space-y-6">
+        <!-- Hero Header -->
+        <div class="rounded-2xl bg-gradient-to-r from-dark-900 via-dark-850 to-slate-900 border border-slate-800 p-6 shadow-xl">
+          <h1 class="text-2xl font-black text-white tracking-tight">Forensic Intelligence Dashboard</h1>
+          <p class="text-xs text-slate-300 mt-1 max-w-2xl leading-relaxed">
+            Multi-modal forensic overview across Instagram Reels, YouTube Shorts, uploaded photos, and audio.
+            Integrates facial deepfake analysis, temporal AI video flicker, voice cloning detection, and Gemini Multimodal Arbiter.
           </p>
         </div>
 
-        <div>
-          <label class="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1.5">Accompanying Caption / Claim (Optional)</label>
-          <textarea id="urlCaption" rows="2" class="w-full rounded-xl bg-dark-850 border border-slate-800 focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 px-3.5 py-2 text-sm text-slate-200 placeholder-slate-500 outline-none transition" placeholder="Paste the text or claim accompanying this post..."></textarea>
-        </div>
-
-        <button id="analyzeUrlBtn" class="w-full py-3.5 rounded-xl bg-gradient-to-r from-cyan-500 to-teal-500 hover:from-cyan-400 hover:to-teal-400 text-white font-semibold text-sm shadow-lg shadow-cyan-500/20 transition flex items-center justify-center space-x-2">
-          <i class="fa-solid fa-bolt"></i>
-          <span>Inspect Social Reel / URL</span>
-        </button>
-      </div>
-    </section>
-
-    <!-- ============================================================================== -->
-    <!-- 5-Stage Progress Loader -->
-    <!-- ============================================================================== -->
-    <section id="progressSection" class="hidden bg-dark-900 rounded-2xl border border-slate-800 p-6 shadow-xl space-y-6">
-      <div class="flex items-center justify-between">
-        <h3 class="text-sm font-bold tracking-wider uppercase text-cyan-400 flex items-center space-x-2">
-          <i class="fa-solid fa-microchip animate-pulse"></i>
-          <span>Forensic Pipeline In Progress</span>
-        </h3>
-        <span id="overallTimer" class="text-xs font-mono text-slate-400">Processing...</span>
-      </div>
-
-      <!-- 5 Stages Grid -->
-      <div class="grid grid-cols-1 md:grid-cols-5 gap-3">
-        <!-- Stage 1 -->
-        <div id="stage1" class="bg-dark-850 rounded-xl p-3.5 border border-slate-800 flex items-start space-x-3 transition">
-          <div class="stage-icon w-8 h-8 rounded-lg bg-slate-800 flex items-center justify-center text-slate-400 text-xs shrink-0">
-            1
+        <!-- KPI Grid (6 metrics) -->
+        <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+          <div class="bg-dark-900 rounded-xl p-4 border border-slate-800 shadow-sm">
+            <span class="text-[10px] font-mono uppercase text-slate-400 font-bold block">Total Scans</span>
+            <span id="kpiTotalScans" class="text-2xl font-black text-white mt-1 block">0</span>
           </div>
-          <div class="overflow-hidden">
-            <p class="text-xs font-semibold text-slate-200 truncate">Ingest & Hash</p>
-            <p class="text-[10px] text-slate-400 truncate">SHA-256 Provenance</p>
+          <div class="bg-dark-900 rounded-xl p-4 border border-rose-950/60 shadow-sm">
+            <span class="text-[10px] font-mono uppercase text-rose-400 font-bold block">Flagged Deepfakes</span>
+            <span id="kpiDeepfakes" class="text-2xl font-black text-rose-400 mt-1 block">0</span>
+          </div>
+          <div class="bg-dark-900 rounded-xl p-4 border border-amber-950/60 shadow-sm">
+            <span class="text-[10px] font-mono uppercase text-amber-400 font-bold block">Suspicious / Review</span>
+            <span id="kpiSuspicious" class="text-2xl font-black text-amber-400 mt-1 block">0</span>
+          </div>
+          <div class="bg-dark-900 rounded-xl p-4 border border-emerald-950/60 shadow-sm">
+            <span class="text-[10px] font-mono uppercase text-emerald-400 font-bold block">Authentic / Real</span>
+            <span id="kpiAuthentic" class="text-2xl font-black text-emerald-400 mt-1 block">0</span>
+          </div>
+          <div class="bg-dark-900 rounded-xl p-4 border border-slate-800 shadow-sm">
+            <span class="text-[10px] font-mono uppercase text-cyan-400 font-bold block">Avg Manipulation</span>
+            <span id="kpiAvgScore" class="text-2xl font-black text-cyan-400 mt-1 block">0%</span>
+          </div>
+          <div class="bg-dark-900 rounded-xl p-4 border border-slate-800 shadow-sm">
+            <span class="text-[10px] font-mono uppercase text-indigo-400 font-bold block">Incident Tickets</span>
+            <span id="kpiIncidents" class="text-2xl font-black text-indigo-400 mt-1 block">0</span>
           </div>
         </div>
 
-        <!-- Stage 2 -->
-        <div id="stage2" class="bg-dark-850 rounded-xl p-3.5 border border-slate-800 flex items-start space-x-3 transition">
-          <div class="stage-icon w-8 h-8 rounded-lg bg-slate-800 flex items-center justify-center text-slate-400 text-xs shrink-0">
-            2
+        <!-- Split Grid: Chart + Forensic Vector Breakdown -->
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <!-- Chart.js Verdict Breakdown -->
+          <div class="bg-dark-900 rounded-2xl p-5 border border-slate-800 space-y-3">
+            <div class="flex items-center justify-between">
+              <span class="text-xs font-bold text-white uppercase tracking-wider">Verdict Distribution</span>
+              <span class="text-[10px] font-mono text-slate-500">Live Workspace Analytics</span>
+            </div>
+            <div class="h-64 relative flex items-center justify-center">
+              <canvas id="overviewChartCanvas"></canvas>
+            </div>
           </div>
-          <div class="overflow-hidden">
-            <p class="text-xs font-semibold text-slate-200 truncate">Visual & ELA</p>
-            <p class="text-[10px] text-slate-400 truncate">ViT & Face Crops</p>
+
+          <!-- 3 Forensic Vectors Overview -->
+          <div class="bg-dark-900 rounded-2xl p-5 border border-slate-800 space-y-4">
+            <span class="text-xs font-bold text-white uppercase tracking-wider block">Three-Way Verification Architecture</span>
+            <div class="space-y-3">
+              <div class="bg-dark-850 p-3.5 rounded-xl border border-slate-800/80 space-y-1">
+                <div class="flex items-center space-x-2 text-cyan-400 text-xs font-bold">
+                  <i class="fa-solid fa-user-ninja"></i>
+                  <span>Deepfake Face Manipulation</span>
+                </div>
+                <p class="text-[11px] text-slate-300">Targeted face cropping with MediaPipe & OpenCV, 30% border reflection padding, and ViT boundary seam evaluation.</p>
+              </div>
+
+              <div class="bg-dark-850 p-3.5 rounded-xl border border-slate-800/80 space-y-1">
+                <div class="flex items-center space-x-2 text-teal-400 text-xs font-bold">
+                  <i class="fa-solid fa-wand-magic-sparkles"></i>
+                  <span>Generative AI Visuals</span>
+                </div>
+                <p class="text-[11px] text-slate-300">Detects Sora, Midjourney, Kling, and Runway generation cues: morphing architectural geometry, temporal flicker, and ELA pixel variance.</p>
+              </div>
+
+              <div class="bg-dark-850 p-3.5 rounded-xl border border-slate-800/80 space-y-1">
+                <div class="flex items-center space-x-2 text-indigo-400 text-xs font-bold">
+                  <i class="fa-solid fa-microphone-lines"></i>
+                  <span>Voice Manipulation & Dubbing</span>
+                </div>
+                <p class="text-[11px] text-slate-300">Wav2Vec2 voice clone detection with active speech RMS isolation, background music dampening, and lip-sync cadence correlation.</p>
+              </div>
+            </div>
           </div>
         </div>
 
-        <!-- Stage 3 -->
-        <div id="stage3" class="bg-dark-850 rounded-xl p-3.5 border border-slate-800 flex items-start space-x-3 transition">
-          <div class="stage-icon w-8 h-8 rounded-lg bg-slate-800 flex items-center justify-center text-slate-400 text-xs shrink-0">
-            3
+        <!-- Recent Investigations Table -->
+        <div class="bg-dark-900 rounded-2xl p-5 border border-slate-800 space-y-4">
+          <div class="flex items-center justify-between">
+            <span class="text-xs font-bold text-white uppercase tracking-wider">Recent Investigations</span>
+            <button data-nav-target="view-history" class="text-xs text-cyan-400 hover:text-cyan-300 transition font-medium">View All &rarr;</button>
           </div>
-          <div class="overflow-hidden">
-            <p class="text-xs font-semibold text-slate-200 truncate">Audio & Speech</p>
-            <p class="text-[10px] text-slate-400 truncate">Wav2Vec2 & Whisper</p>
-          </div>
-        </div>
-
-        <!-- Stage 4 -->
-        <div id="stage4" class="bg-dark-850 rounded-xl p-3.5 border border-slate-800 flex items-start space-x-3 transition">
-          <div class="stage-icon w-8 h-8 rounded-lg bg-slate-800 flex items-center justify-center text-slate-400 text-xs shrink-0">
-            4
-          </div>
-          <div class="overflow-hidden">
-            <p class="text-xs font-semibold text-slate-200 truncate">Cross-Modal</p>
-            <p class="text-[10px] text-slate-400 truncate">Lip-Sync & CLIP</p>
-          </div>
-        </div>
-
-        <!-- Stage 5 -->
-        <div id="stage5" class="bg-dark-850 rounded-xl p-3.5 border border-slate-800 flex items-start space-x-3 transition">
-          <div class="stage-icon w-8 h-8 rounded-lg bg-slate-800 flex items-center justify-center text-slate-400 text-xs shrink-0">
-            5
-          </div>
-          <div class="overflow-hidden">
-            <p class="text-xs font-semibold text-slate-200 truncate">AI Synthesis</p>
-            <p class="text-[10px] text-slate-400 truncate">Gemini Correlation</p>
+          <div class="overflow-x-auto">
+            <table class="w-full text-left">
+              <thead>
+                <tr class="text-[10px] uppercase font-bold text-slate-500 border-b border-slate-800">
+                  <th class="py-2.5 px-3">Target / SHA-256</th>
+                  <th class="py-2.5 px-3">Media</th>
+                  <th class="py-2.5 px-3">Verdict</th>
+                  <th class="py-2.5 px-3">Probability</th>
+                  <th class="py-2.5 px-3 text-right">Action</th>
+                </tr>
+              </thead>
+              <tbody id="overviewRecentTableBody" class="divide-y divide-slate-850">
+                <!-- Dynamically Populated -->
+              </tbody>
+            </table>
           </div>
         </div>
-      </div>
-    </section>
+      </section>
 
-    <!-- ============================================================================== -->
-    <!-- Full Forensic Report Display Section -->
-    <!-- ============================================================================== -->
-    <section id="reportSection" class="hidden space-y-6">
 
-      <!-- Deepfake Alert Banner (Shown if deepfake_alert_triggered is true) -->
-      <div id="alertBanner" class="hidden rounded-2xl bg-gradient-to-r from-rose-950/80 via-red-900/60 to-rose-950/80 border-2 border-rose-500/80 p-5 shadow-2xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-        <div class="flex items-start space-x-3.5">
-          <div class="w-12 h-12 rounded-xl bg-rose-500/20 text-rose-400 flex items-center justify-center text-2xl shrink-0">
-            <i class="fa-solid fa-triangle-exclamation animate-bounce"></i>
-          </div>
+      <!-- ========================================================================== -->
+      <!-- VIEW 2: DIRECT MEDIA UPLOAD -->
+      <!-- ========================================================================== -->
+      <section id="view-upload" class="truthlens-view hidden space-y-6">
+        <div class="rounded-2xl bg-dark-900 border border-slate-800 p-6 shadow-xl space-y-5">
           <div>
-            <h3 class="text-base font-extrabold text-white tracking-wide uppercase flex items-center space-x-2">
-              <span>Deepfake / Synthetic Manipulation Alert Triggered</span>
-            </h3>
-            <p id="alertReasonText" class="text-xs text-rose-200 mt-1 max-w-2xl leading-relaxed">
-              Automated classifiers and cross-modal correlation flagged moderate-to-high likelihood of face manipulation, AI video generation, or dubbed voice mismatch.
+            <h2 class="text-xl font-bold text-white flex items-center space-x-2">
+              <i class="fa-solid fa-cloud-arrow-up text-cyan-400"></i>
+              <span>Direct Media Upload</span>
+            </h2>
+            <p class="text-xs text-slate-400 mt-1">Upload video, picture, or audio files for comprehensive forensic verification.</p>
+          </div>
+
+          <!-- Drag and Drop Box -->
+          <div id="uploadDropZone" class="border-2 border-dashed border-slate-700 hover:border-cyan-500 bg-dark-850/60 rounded-2xl p-10 text-center cursor-pointer transition flex flex-col items-center justify-center space-y-3">
+            <div class="w-14 h-14 rounded-full bg-cyan-500/10 flex items-center justify-center text-cyan-400 text-2xl">
+              <i class="fa-solid fa-file-arrow-up"></i>
+            </div>
+            <div>
+              <p class="text-sm font-semibold text-slate-200">Drag and drop file here, or click to browse</p>
+              <p class="text-xs text-slate-400 mt-1">Supports MP4, MOV, WEBM, JPG, PNG, WEBP, MP3, WAV</p>
+            </div>
+            <input type="file" id="uploadFileInput" class="hidden" accept="video/mp4,video/quicktime,video/webm,image/jpeg,image/png,image/webp,audio/mpeg,audio/wav">
+          </div>
+
+          <!-- Preview Container -->
+          <div id="uploadPreviewContainer" class="hidden bg-dark-850 rounded-xl p-4 border border-slate-800 flex flex-col sm:flex-row items-center space-y-3 sm:space-y-0 sm:space-x-4">
+            <div id="uploadPreviewMedia" class="w-full sm:w-44 h-32 rounded-lg overflow-hidden bg-black flex items-center justify-center border border-slate-700 shrink-0"></div>
+            <div class="flex-1 w-full space-y-1">
+              <div class="flex items-center justify-between">
+                <span id="uploadPreviewName" class="text-sm font-semibold text-white truncate max-w-xs">file.mp4</span>
+                <button id="uploadClearBtn" class="text-xs text-rose-400 hover:text-rose-300 transition">
+                  <i class="fa-solid fa-trash-can"></i> Remove
+                </button>
+              </div>
+              <p id="uploadPreviewSize" class="text-xs text-slate-400">0.0 MB</p>
+              <span class="inline-block text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">Ready for Analysis</span>
+            </div>
+          </div>
+
+          <!-- Optional Caption -->
+          <div>
+            <label class="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1.5">Social Media Caption / Post Claim (Optional)</label>
+            <textarea id="uploadCaptionInput" rows="2" class="w-full rounded-xl bg-dark-850 border border-slate-800 focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 px-3.5 py-2 text-xs text-slate-200 placeholder-slate-500 outline-none transition" placeholder="Paste accompanying social media text or claim to evaluate context alignment..."></textarea>
+          </div>
+
+          <button id="executeUploadBtn" class="w-full py-3.5 rounded-xl bg-gradient-to-r from-cyan-500 to-teal-500 hover:from-cyan-400 hover:to-teal-400 text-white font-bold text-sm shadow-lg shadow-cyan-500/20 transition flex items-center justify-center space-x-2">
+            <i class="fa-solid fa-magnifying-glass"></i>
+            <span>Execute Multimodal Analysis</span>
+          </button>
+        </div>
+      </section>
+
+
+      <!-- ========================================================================== -->
+      <!-- VIEW 3: SOCIAL MEDIA SCANNER -->
+      <!-- ========================================================================== -->
+      <section id="view-scanner" class="truthlens-view hidden space-y-6">
+        <div class="rounded-2xl bg-dark-900 border border-slate-800 p-6 shadow-xl space-y-5">
+          <div>
+            <h2 class="text-xl font-bold text-white flex items-center space-x-2">
+              <i class="fa-solid fa-hashtag text-rose-400"></i>
+              <span>Social Media Scanner (Instagram Reels & YouTube Shorts)</span>
+            </h2>
+            <p class="text-xs text-slate-400 mt-1">Directly ingests social video links using optimized yt-dlp pipelines with cookies support.</p>
+          </div>
+
+          <div>
+            <label class="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1.5">Reel or Shorts URL</label>
+            <div class="relative">
+              <span class="absolute inset-y-0 left-0 pl-3.5 flex items-center text-slate-500 pointer-events-none">
+                <i class="fa-solid fa-link"></i>
+              </span>
+              <input type="url" id="scanUrlInput" class="w-full pl-10 pr-4 py-3 rounded-xl bg-dark-850 border border-slate-800 focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 text-xs text-slate-200 placeholder-slate-500 outline-none transition" placeholder="https://www.instagram.com/reel/C... or https://youtube.com/shorts/...">
+            </div>
+            <div class="mt-2 p-3 bg-cyan-950/30 border border-cyan-800/40 rounded-xl flex items-start space-x-2 text-xs text-cyan-300">
+              <i class="fa-solid fa-circle-info text-cyan-400 mt-0.5 shrink-0"></i>
+              <span><strong>Instagram Tip:</strong> If Instagram presents a login wall or blocks a link, download the video MP4 and upload it directly in the <strong>Direct Media Upload</strong> workspace.</span>
+            </div>
+          </div>
+
+          <div>
+            <label class="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1.5">Claim or Context (Optional)</label>
+            <textarea id="scanCaptionInput" rows="2" class="w-full rounded-xl bg-dark-850 border border-slate-800 focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 px-3.5 py-2 text-xs text-slate-200 placeholder-slate-500 outline-none transition" placeholder="Paste context or caption to verify cross-modal semantic consistency..."></textarea>
+          </div>
+
+          <button id="executeScanUrlBtn" class="w-full py-3.5 rounded-xl bg-gradient-to-r from-rose-500 via-purple-600 to-indigo-600 hover:from-rose-400 hover:to-indigo-500 text-white font-bold text-sm shadow-lg shadow-rose-500/20 transition flex items-center justify-center space-x-2">
+            <i class="fa-solid fa-bolt"></i>
+            <span>Inspect Social Reel</span>
+          </button>
+        </div>
+      </section>
+
+
+      <!-- ========================================================================== -->
+      <!-- VIEW 4: COMPARE REAL VS. AI -->
+      <!-- ========================================================================== -->
+      <section id="view-compare" class="truthlens-view hidden space-y-6">
+        <div class="rounded-2xl bg-dark-900 border border-slate-800 p-6 shadow-xl space-y-6">
+          <div>
+            <h2 class="text-xl font-bold text-white flex items-center space-x-2">
+              <i class="fa-solid fa-code-compare text-amber-400"></i>
+              <span>Side-by-Side Biometric & Forensic Verification</span>
+            </h2>
+            <p class="text-xs text-slate-400 mt-1">Compare an authentic reference photo/video against suspect media to detect identity drift, face-swaps, and sensor noise tampering.</p>
+          </div>
+
+          <!-- Dual Upload Cards -->
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <!-- Left: Real Reference -->
+            <div class="bg-dark-850 rounded-xl p-5 border border-slate-800 space-y-3">
+              <div class="flex items-center justify-between">
+                <span class="text-xs font-bold uppercase tracking-wider text-emerald-400 flex items-center space-x-1.5">
+                  <i class="fa-solid fa-circle-check"></i>
+                  <span>1. Authentic Reference Media</span>
+                </span>
+                <span class="text-[10px] font-mono text-slate-500">Real Benchmark</span>
+              </div>
+              <div id="compOrigDrop" class="border-2 border-dashed border-slate-700 hover:border-emerald-500 bg-dark-900/60 rounded-xl p-6 text-center cursor-pointer transition flex flex-col items-center justify-center space-y-2">
+                <i class="fa-solid fa-camera text-emerald-400 text-2xl"></i>
+                <p class="text-xs font-semibold text-slate-200">Select authentic reference file</p>
+                <p class="text-[10px] text-slate-400">MP4, MOV, WEBM, JPG, PNG, WEBP</p>
+                <input type="file" id="compOrigInput" class="hidden" accept="video/mp4,video/quicktime,video/webm,image/jpeg,image/png,image/webp">
+              </div>
+              <div id="compOrigPreview" class="hidden bg-dark-900 p-3 rounded-xl border border-slate-800 flex items-center justify-between text-xs">
+                <span id="compOrigName" class="font-semibold text-white truncate max-w-xs">reference.jpg</span>
+                <span class="text-emerald-400 font-bold text-[10px]">READY</span>
+              </div>
+            </div>
+
+            <!-- Right: Suspect Media -->
+            <div class="bg-dark-850 rounded-xl p-5 border border-slate-800 space-y-3">
+              <div class="flex items-center justify-between">
+                <span class="text-xs font-bold uppercase tracking-wider text-rose-400 flex items-center space-x-1.5">
+                  <i class="fa-solid fa-triangle-exclamation"></i>
+                  <span>2. Suspect Media (To Verify)</span>
+                </span>
+                <span class="text-[10px] font-mono text-slate-500">Suspect</span>
+              </div>
+              <div id="compSuspDrop" class="border-2 border-dashed border-slate-700 hover:border-rose-500 bg-dark-900/60 rounded-xl p-6 text-center cursor-pointer transition flex flex-col items-center justify-center space-y-2">
+                <i class="fa-solid fa-user-secret text-rose-400 text-2xl"></i>
+                <p class="text-xs font-semibold text-slate-200">Select suspect media to verify</p>
+                <p class="text-[10px] text-slate-400">MP4, MOV, WEBM, JPG, PNG, WEBP</p>
+                <input type="file" id="compSuspInput" class="hidden" accept="video/mp4,video/quicktime,video/webm,image/jpeg,image/png,image/webp">
+              </div>
+              <div id="compSuspPreview" class="hidden bg-dark-900 p-3 rounded-xl border border-slate-800 flex items-center justify-between text-xs">
+                <span id="compSuspName" class="font-semibold text-white truncate max-w-xs">suspect.mp4</span>
+                <span class="text-rose-400 font-bold text-[10px]">READY</span>
+              </div>
+            </div>
+          </div>
+
+          <button id="executeCompareBtn" class="w-full py-3.5 rounded-xl bg-gradient-to-r from-amber-500 via-orange-500 to-rose-500 hover:from-amber-400 hover:to-rose-400 text-white font-bold text-sm shadow-lg shadow-amber-500/20 transition flex items-center justify-center space-x-2">
+            <i class="fa-solid fa-code-compare"></i>
+            <span>Run Forensic Comparison</span>
+          </button>
+
+          <!-- Compare Results Output Card -->
+          <div id="compareResultsCard" class="hidden rounded-xl bg-dark-850 p-6 border border-slate-800 space-y-5">
+            <div class="flex items-center justify-between flex-wrap gap-4">
+              <div>
+                <span class="text-[10px] font-mono text-slate-400 uppercase tracking-wider block mb-1">Comparative Verdict</span>
+                <span id="compVerdictBadge" class="px-3 py-1 rounded-lg text-xs font-black border">VERDICT</span>
+              </div>
+              <div class="flex items-center space-x-6">
+                <div>
+                  <span class="text-[10px] font-mono text-slate-400 uppercase tracking-wider block">AI Probability</span>
+                  <span id="compAiProbText" class="text-xl font-black text-rose-400">0%</span>
+                </div>
+                <div>
+                  <span class="text-[10px] font-mono text-slate-400 uppercase tracking-wider block">Identity Match</span>
+                  <span id="compIdentityText" class="text-xl font-black text-cyan-400">0%</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Dual Bars -->
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div class="bg-dark-900 p-3 rounded-xl border border-slate-800">
+                <span class="text-[11px] font-semibold text-slate-300 block mb-1.5">AI Generation Probability</span>
+                <div class="w-full bg-slate-800 rounded-full h-2 overflow-hidden">
+                  <div id="compAiProbBar" class="h-2 rounded-full bg-rose-500 transition-all duration-700" style="width: 0%"></div>
+                </div>
+              </div>
+              <div class="bg-dark-900 p-3 rounded-xl border border-slate-800">
+                <span class="text-[11px] font-semibold text-slate-300 block mb-1.5">Biometric Identity Consistency</span>
+                <div class="w-full bg-slate-800 rounded-full h-2 overflow-hidden">
+                  <div id="compIdentityBar" class="h-2 rounded-full bg-cyan-500 transition-all duration-700" style="width: 0%"></div>
+                </div>
+              </div>
+            </div>
+
+            <p id="compSummaryText" class="text-xs text-slate-300 leading-relaxed bg-dark-900 p-4 rounded-xl border border-slate-800/80">
+              Comparison summary...
             </p>
+
+            <!-- Side-by-Side ELA Heatmaps -->
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div class="space-y-1.5">
+                <span class="text-[10px] font-mono text-slate-400 uppercase font-bold">Original Reference Heatmap</span>
+                <div class="h-44 rounded-xl overflow-hidden bg-black flex items-center justify-center border border-slate-800">
+                  <img id="compOrigHeatmapImg" class="w-full h-full object-contain" alt="Original Heatmap">
+                </div>
+              </div>
+              <div class="space-y-1.5">
+                <span class="text-[10px] font-mono text-slate-400 uppercase font-bold">Suspect Media Heatmap</span>
+                <div class="h-44 rounded-xl overflow-hidden bg-black flex items-center justify-center border border-slate-800">
+                  <img id="compSuspHeatmapImg" class="w-full h-full object-contain" alt="Suspect Heatmap">
+                </div>
+              </div>
+            </div>
+
+            <!-- Key Differentiators -->
+            <div class="space-y-2">
+              <span class="text-xs font-bold text-white uppercase tracking-wider block">Key Forensic Differentiators</span>
+              <ul id="compDifferentiatorsList" class="space-y-1.5"></ul>
+            </div>
           </div>
         </div>
-        <button id="openReportModalBtn" class="shrink-0 px-4 py-2.5 rounded-xl bg-rose-500 hover:bg-rose-600 text-white font-bold text-xs shadow-lg shadow-rose-500/30 transition flex items-center space-x-2">
-          <i class="fa-solid fa-flag"></i>
-          <span>Report This Media</span>
-        </button>
-      </div>
+      </section>
 
-      <!-- Evidence Traceability Bar -->
-      <div class="bg-dark-900 rounded-2xl border border-slate-800 p-5 shadow-lg flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
-        <div class="space-y-1">
-          <div class="flex items-center space-x-2">
-            <span class="text-xs font-mono font-bold text-slate-400 uppercase tracking-wider">SHA-256 Provenance:</span>
-            <span id="reportHashShort" class="text-xs font-mono font-bold text-cyan-400">e3b0c44298fc1c14...</span>
-            <button id="copyHashBtn" title="Copy Full SHA-256" class="text-xs text-slate-400 hover:text-white transition">
-              <i class="fa-regular fa-copy"></i>
+
+      <!-- ========================================================================== -->
+      <!-- VIEW 5: TEXT FORENSICS -->
+      <!-- ========================================================================== -->
+      <section id="view-text" class="truthlens-view hidden space-y-6">
+        <div class="rounded-2xl bg-dark-900 border border-slate-800 p-6 shadow-xl space-y-5">
+          <div>
+            <h2 class="text-xl font-bold text-white flex items-center space-x-2">
+              <i class="fa-solid fa-file-lines text-purple-400"></i>
+              <span>Linguistic & Text Forensics</span>
+            </h2>
+            <p class="text-xs text-slate-400 mt-1">Evaluates lexical diversity, sentence burstiness, repetition index, and formulaic AI writing with transparent probabilistic metrics.</p>
+          </div>
+
+          <div>
+            <label class="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1.5">Social Caption, Post Claim, or Article Text</label>
+            <textarea id="textForensicsInput" rows="5" class="w-full rounded-xl bg-dark-850 border border-slate-800 focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 px-3.5 py-3 text-xs text-slate-200 placeholder-slate-500 outline-none transition" placeholder="Paste article text, post caption, or controversial claim here..."></textarea>
+          </div>
+
+          <button id="executeTextAnalysisBtn" class="w-full py-3.5 rounded-xl bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-bold text-sm shadow-lg shadow-purple-500/20 transition flex items-center justify-center space-x-2">
+            <i class="fa-solid fa-square-poll-vertical"></i>
+            <span>Analyze Text Forensics</span>
+          </button>
+
+          <!-- Text Results Output Card -->
+          <div id="textForensicsResultsCard" class="hidden rounded-xl bg-dark-850 p-6 border border-slate-800 space-y-5">
+            <div class="flex items-center justify-between flex-wrap gap-4">
+              <div>
+                <span class="text-[10px] font-mono text-slate-400 uppercase tracking-wider block mb-1">Linguistic Verdict</span>
+                <span id="textVerdictBadge" class="px-3 py-1 rounded-lg text-xs font-bold border border-cyan-500/30 bg-cyan-500/10 text-cyan-300">VERDICT</span>
+              </div>
+              <div class="text-right">
+                <span class="text-[10px] font-mono text-slate-400 uppercase tracking-wider block">AI Likelihood Score</span>
+                <span id="textAiScoreText" class="text-2xl font-black text-purple-400">0%</span>
+              </div>
+            </div>
+
+            <!-- Score Bar -->
+            <div class="w-full bg-slate-800 rounded-full h-2 overflow-hidden">
+              <div id="textAiScoreBar" class="h-2 rounded-full bg-purple-500 transition-all duration-700" style="width: 0%"></div>
+            </div>
+
+            <!-- 6 Metrics Grid -->
+            <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+              <div class="bg-dark-900 p-3 rounded-xl border border-slate-800">
+                <span class="text-[9px] font-mono text-slate-400 uppercase block">Words</span>
+                <span id="textWordCount" class="text-base font-bold text-white mt-0.5 block">0</span>
+              </div>
+              <div class="bg-dark-900 p-3 rounded-xl border border-slate-800">
+                <span class="text-[9px] font-mono text-slate-400 uppercase block">Burstiness</span>
+                <span id="textBurstiness" class="text-base font-bold text-cyan-400 mt-0.5 block">0</span>
+              </div>
+              <div class="bg-dark-900 p-3 rounded-xl border border-slate-800">
+                <span class="text-[9px] font-mono text-slate-400 uppercase block">Lexical Div (TTR)</span>
+                <span id="textLexicalDiv" class="text-base font-bold text-teal-400 mt-0.5 block">0</span>
+              </div>
+              <div class="bg-dark-900 p-3 rounded-xl border border-slate-800">
+                <span class="text-[9px] font-mono text-slate-400 uppercase block">Repetition Index</span>
+                <span id="textRepetition" class="text-base font-bold text-amber-400 mt-0.5 block">0</span>
+              </div>
+              <div class="bg-dark-900 p-3 rounded-xl border border-slate-800">
+                <span class="text-[9px] font-mono text-slate-400 uppercase block">Reading Ease</span>
+                <span id="textReadingEase" class="text-base font-bold text-slate-200 mt-0.5 block">0</span>
+              </div>
+              <div class="bg-dark-900 p-3 rounded-xl border border-slate-800">
+                <span class="text-[9px] font-mono text-slate-400 uppercase block">Grade Level</span>
+                <span id="textKincaidGrade" class="text-base font-bold text-slate-200 mt-0.5 block">0</span>
+              </div>
+            </div>
+
+            <!-- Structural Flags List -->
+            <div class="space-y-2">
+              <span class="text-xs font-bold text-white uppercase tracking-wider block">Observed Linguistic Patterns</span>
+              <ul id="textPatternsList" class="space-y-1.5"></ul>
+            </div>
+
+            <!-- Transparent Disclaimer -->
+            <div class="p-3 bg-amber-950/20 border border-amber-800/40 rounded-xl flex items-start space-x-2 text-xs text-amber-200">
+              <i class="fa-solid fa-triangle-exclamation text-amber-400 mt-0.5 shrink-0"></i>
+              <span><strong>Caveat:</strong> Text AI detection is probabilistic and subject to false positives on formal human writing. Use structural metrics as supplementary signals rather than definitive proof.</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+
+      <!-- ========================================================================== -->
+      <!-- VIEW 6: HISTORY & INCIDENTS -->
+      <!-- ========================================================================== -->
+      <section id="view-history" class="truthlens-view hidden space-y-6">
+        <!-- History Table Card -->
+        <div class="rounded-2xl bg-dark-900 border border-slate-800 p-6 shadow-xl space-y-4">
+          <div class="flex items-center justify-between">
+            <div>
+              <h2 class="text-lg font-bold text-white flex items-center space-x-2">
+                <i class="fa-solid fa-clock-rotate-left text-emerald-400"></i>
+                <span>Completed Forensic Investigations</span>
+              </h2>
+              <p class="text-xs text-slate-400 mt-0.5">Stored reports with persistent cryptographic provenance hashes.</p>
+            </div>
+            <button onclick="loadHistoryData()" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs text-slate-300 transition">
+              <i class="fa-solid fa-rotate-right"></i> Refresh
             </button>
           </div>
-          <p class="text-xs text-slate-400">
-            Source: <span id="reportSourceLabel" class="text-slate-200 font-medium">Uploaded file</span> &bull;
-            Duration: <span id="reportDurationLabel" class="text-slate-200 font-medium">0.0s</span> &bull;
-            Analyzed: <span id="reportTimestampLabel" class="text-slate-200 font-medium">Just now</span>
-          </p>
+
+          <div class="overflow-x-auto">
+            <table class="w-full text-left">
+              <thead>
+                <tr class="text-[10px] uppercase font-bold text-slate-500 border-b border-slate-800">
+                  <th class="py-2.5 px-3">Target / Identifier</th>
+                  <th class="py-2.5 px-3">Media</th>
+                  <th class="py-2.5 px-3">Verdict</th>
+                  <th class="py-2.5 px-3">Probability</th>
+                  <th class="py-2.5 px-3 text-right">Action</th>
+                </tr>
+              </thead>
+              <tbody id="historyTableBody" class="divide-y divide-slate-850">
+                <!-- Dynamically Populated -->
+              </tbody>
+            </table>
+          </div>
         </div>
 
-        <div class="flex items-center space-x-3">
-          <div id="verdictBadge" class="px-3.5 py-1.5 rounded-lg text-xs font-extrabold uppercase tracking-wider bg-slate-800 text-slate-200 border border-slate-700">
-            Likely Authentic
+        <!-- Incidents Table Card -->
+        <div class="rounded-2xl bg-dark-900 border border-slate-800 p-6 shadow-xl space-y-4">
+          <div>
+            <h2 class="text-lg font-bold text-white flex items-center space-x-2">
+              <i class="fa-solid fa-flag text-rose-400"></i>
+              <span>Logged Incident Tickets</span>
+            </h2>
+            <p class="text-xs text-slate-400 mt-0.5">Human-confirmed incidents with generated platform takedown reports.</p>
           </div>
-          <div class="text-right">
-            <div class="text-[10px] uppercase font-bold text-slate-400">Aggregated Score</div>
-            <div id="reportScoreLabel" class="text-base font-extrabold text-cyan-400">12%</div>
+
+          <div class="overflow-x-auto">
+            <table class="w-full text-left">
+              <thead>
+                <tr class="text-[10px] uppercase font-bold text-slate-500 border-b border-slate-800">
+                  <th class="py-2.5 px-3">Ticket ID</th>
+                  <th class="py-2.5 px-3">Target</th>
+                  <th class="py-2.5 px-3">Manipulation</th>
+                  <th class="py-2.5 px-3">Platform</th>
+                  <th class="py-2.5 px-3 text-right">Takedown</th>
+                </tr>
+              </thead>
+              <tbody id="incidentsTableBody" class="divide-y divide-slate-850">
+                <!-- Dynamically Populated -->
+              </tbody>
+            </table>
           </div>
+        </div>
+      </section>
+
+
+      <!-- ========================================================================== -->
+      <!-- VIEW 7: MODEL RELIABILITY & STATUS -->
+      <!-- ========================================================================== -->
+      <section id="view-models" class="truthlens-view hidden space-y-6">
+        <div class="rounded-2xl bg-dark-900 border border-slate-800 p-6 shadow-xl space-y-5">
+          <div class="flex items-center justify-between flex-wrap gap-4">
+            <div>
+              <h2 class="text-lg font-bold text-white flex items-center space-x-2">
+                <i class="fa-solid fa-microchip text-indigo-400"></i>
+                <span>Pipeline Model Status & Calibration</span>
+              </h2>
+              <p class="text-xs text-slate-400 mt-0.5">Real-time status of lazy-loaded machine learning classifiers and fusion arbiters.</p>
+            </div>
+            <span id="systemDeviceBadge" class="px-3 py-1 rounded-full text-xs font-mono bg-slate-800 text-slate-300 border border-slate-700">Compute Device: CPU</span>
+          </div>
+
+          <div class="overflow-x-auto">
+            <table class="w-full text-left">
+              <thead>
+                <tr class="text-[10px] uppercase font-bold text-slate-500 border-b border-slate-800">
+                  <th class="py-3 px-3">Model / Pipeline</th>
+                  <th class="py-3 px-3">Architecture</th>
+                  <th class="py-3 px-3">Status</th>
+                  <th class="py-3 px-3">Benchmark</th>
+                  <th class="py-3 px-3">Calibration Mode</th>
+                </tr>
+              </thead>
+              <tbody id="modelsStatusTableBody" class="divide-y divide-slate-850">
+                <!-- Dynamically Populated -->
+              </tbody>
+            </table>
+          </div>
+
+          <div class="p-4 bg-slate-800/40 rounded-xl border border-slate-800 text-xs text-slate-400 leading-relaxed">
+            <strong class="text-slate-200">System Integrity Standard:</strong> TruthLens strictly displays verified real-time operational states. Benchmark evaluations display <code>Evaluation Pending</code> until standardized academic validation sets (e.g. FaceForensics++, DFDC) are scored on-device.
+          </div>
+        </div>
+      </section>
+
+
+      <!-- ========================================================================== -->
+      <!-- VIEW 8: ACTIVE INVESTIGATION DOSSIER WORKSPACE -->
+      <!-- ========================================================================== -->
+      <section id="view-dossier" class="truthlens-view hidden space-y-6">
+        <!-- Dossier Header Banner -->
+        <div class="rounded-2xl bg-dark-900 border border-slate-800 p-6 shadow-xl space-y-5">
+          <div class="flex items-center justify-between flex-wrap gap-4">
+            <div>
+              <div class="flex items-center space-x-2 mb-1">
+                <span class="text-xs font-bold text-slate-400 uppercase tracking-wider">Forensic Dossier</span>
+                <span class="text-[10px] font-mono bg-slate-800 text-cyan-400 px-2 py-0.5 rounded border border-slate-700 truncate max-w-xs" id="dossierShaBadge">SHA256</span>
+              </div>
+              <h1 id="dossierTargetName" class="text-xl font-black text-white truncate max-w-lg">Investigation Target</h1>
+            </div>
+
+            <!-- Top Actions -->
+            <div class="flex items-center space-x-2.5">
+              <button onclick="TruthLensViz.exportReportPDF('view-dossier', 'TruthLens_Dossier.pdf')" class="px-3.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold border border-slate-700 transition flex items-center space-x-1.5">
+                <i class="fa-solid fa-file-pdf text-rose-400"></i>
+                <span>Export PDF</span>
+              </button>
+              <button id="dossierLogIncidentBtn" title="Report this confirmed deepfake incident" class="px-3.5 py-1.5 rounded-xl bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 text-xs font-semibold border border-rose-500/30 transition flex items-center space-x-1.5 cursor-pointer shadow-sm">
+                <i class="fa-solid fa-flag text-rose-400"></i>
+                <span>Report Incident</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Verdict & Probability Bar -->
+          <div class="bg-dark-850 p-5 rounded-xl border border-slate-800/80 space-y-3">
+            <div class="flex items-center justify-between flex-wrap gap-3">
+              <div class="flex items-center space-x-3">
+                <span id="dossierVerdictBadge" class="px-3.5 py-1.5 rounded-xl text-sm font-black border tracking-wide">
+                  AUTHENTIC / LIKELY REAL
+                </span>
+                <span id="dossierConfidencePill" class="text-xs font-semibold px-2.5 py-0.5 rounded-md bg-slate-800 text-slate-300 border border-slate-700">
+                  Confidence: Moderate
+                </span>
+              </div>
+              <div class="text-right">
+                <span class="text-[10px] font-mono text-slate-400 uppercase tracking-wider block">Combined Manipulation Probability</span>
+                <span id="dossierScoreText" class="text-2xl font-black text-cyan-400">0%</span>
+              </div>
+            </div>
+
+            <div class="w-full bg-slate-800 rounded-full h-2.5 overflow-hidden">
+              <div id="dossierScoreBar" class="h-2.5 rounded-full bg-cyan-500 transition-all duration-700" style="width: 0%"></div>
+            </div>
+          </div>
+
+          <!-- 3-Way Media Origin Assessment Breakdown -->
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div id="dossierOriginFace" class="bg-dark-850 p-4 rounded-xl border border-slate-800 space-y-1">
+              <div class="flex items-center justify-between mb-2">
+                <span class="text-xs font-bold text-white uppercase tracking-wider">FACE MANIPULATION</span>
+                <span class="text-[10px] font-extrabold px-2 py-0.5 rounded-full border bg-emerald-500/20 text-emerald-300 border-emerald-500/30">LOW</span>
+              </div>
+              <p class="text-xs text-slate-300 leading-relaxed">No consistent face-swap seams or anomalous facial ViT patterns detected.</p>
+            </div>
+            <div id="dossierOriginVisual" class="bg-dark-850 p-4 rounded-xl border border-slate-800 space-y-1">
+              <div class="flex items-center justify-between mb-2">
+                <span class="text-xs font-bold text-white uppercase tracking-wider">AI-GENERATED VISUALS</span>
+                <span class="text-[10px] font-extrabold px-2 py-0.5 rounded-full border bg-emerald-500/20 text-emerald-300 border-emerald-500/30">LOW</span>
+              </div>
+              <p class="text-xs text-slate-300 leading-relaxed">Natural grain structure, continuous optical geometry, and realistic boundary textures.</p>
+            </div>
+            <div id="dossierOriginVoice" class="bg-dark-850 p-4 rounded-xl border border-slate-800 space-y-1">
+              <div class="flex items-center justify-between mb-2">
+                <span class="text-xs font-bold text-white uppercase tracking-wider">VOICE & DUBBING</span>
+                <span class="text-[10px] font-extrabold px-2 py-0.5 rounded-full border bg-emerald-500/20 text-emerald-300 border-emerald-500/30">LOW</span>
+              </div>
+              <p class="text-xs text-slate-300 leading-relaxed">Acoustic vocal micro-features and speech dynamics show normal human vocal tract acoustics.</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Dossier Sub-Tabs Selector (flex-wrap to prevent horizontal clipping) -->
+        <div class="flex flex-wrap border-b border-slate-800 gap-1.5 pb-1">
+          <button data-dossier-tab="dossierTabFindings" class="px-3.5 py-2 text-xs font-bold border-b-2 border-cyan-400 text-cyan-400 whitespace-nowrap transition flex items-center space-x-1.5">
+            <i class="fa-solid fa-list-check"></i>
+            <span>Summary & Findings</span>
+          </button>
+          <button data-dossier-tab="dossierTabTimeline" class="px-3.5 py-2 text-xs font-bold border-b-2 border-transparent text-slate-400 hover:text-slate-200 whitespace-nowrap transition flex items-center space-x-1.5">
+            <i class="fa-solid fa-timeline"></i>
+            <span>Evidence Timeline</span>
+          </button>
+          <button data-dossier-tab="dossierTabNetwork" class="px-3.5 py-2 text-xs font-bold border-b-2 border-transparent text-slate-400 hover:text-slate-200 whitespace-nowrap transition flex items-center space-x-1.5">
+            <i class="fa-solid fa-circle-nodes"></i>
+            <span>Correlation Graph</span>
+          </button>
+          <button data-dossier-tab="dossierTabVisuals" class="px-3.5 py-2 text-xs font-bold border-b-2 border-transparent text-slate-400 hover:text-slate-200 whitespace-nowrap transition flex items-center space-x-1.5">
+            <i class="fa-solid fa-image"></i>
+            <span>Visuals & ELA</span>
+          </button>
+          <button data-dossier-tab="dossierTabProvenance" class="px-3.5 py-2 text-xs font-bold border-b-2 border-transparent text-slate-400 hover:text-slate-200 whitespace-nowrap transition flex items-center space-x-1.5">
+            <i class="fa-solid fa-fingerprint"></i>
+            <span>Provenance Metadata</span>
+          </button>
+          <button data-dossier-tab="dossierTabTakedown" class="px-3.5 py-2 text-xs font-bold border-b-2 border-transparent text-slate-400 hover:text-slate-200 whitespace-nowrap transition flex items-center space-x-1.5">
+            <i class="fa-solid fa-gavel"></i>
+            <span>Draft Takedown Notice</span>
+          </button>
+        </div>
+
+        <!-- Sub-Tab 1: Summary & Findings -->
+        <div id="dossierTabFindings" class="dossier-tab-content space-y-6">
+          <div class="bg-dark-900 rounded-2xl p-6 border border-slate-800 space-y-5">
+            <div>
+              <span class="text-xs font-bold text-white uppercase tracking-wider block mb-2">Executive Forensic Summary</span>
+              <p id="dossierSummaryText" class="text-xs text-slate-300 leading-relaxed bg-dark-850 p-4 rounded-xl border border-slate-800/80"></p>
+            </div>
+
+            <!-- Clean 2x2 Cross-Modal Verification Grid (Restored) -->
+            <div class="space-y-3">
+              <span class="text-xs font-bold text-white uppercase tracking-wider block">Cross-Modal Synthesis & Integrity Checks</span>
+              <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                
+                <!-- Card a: Lip-Sync & Speech Dynamics -->
+                <div class="bg-dark-850 p-4 rounded-xl border border-slate-800 space-y-2">
+                  <div class="flex items-center justify-between">
+                    <span class="text-xs font-bold text-cyan-400 flex items-center space-x-1.5 uppercase tracking-wider">
+                      <i class="fa-solid fa-microphone-lines"></i>
+                      <span>Lip-Sync & Speech Dynamics</span>
+                    </span>
+                    <span id="cmLipSyncBadge" class="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full border bg-slate-800 text-slate-300 border-slate-700">
+                      r = --
+                    </span>
+                  </div>
+                  <p id="dossierLipSyncText" class="text-xs text-slate-300 leading-relaxed"></p>
+                </div>
+
+                <!-- Card b: Caption vs. Content Alignment -->
+                <div class="bg-dark-850 p-4 rounded-xl border border-slate-800 space-y-2">
+                  <div class="flex items-center justify-between">
+                    <span class="text-xs font-bold text-teal-400 flex items-center space-x-1.5 uppercase tracking-wider">
+                      <i class="fa-solid fa-align-left"></i>
+                      <span>Caption vs. Content Alignment</span>
+                    </span>
+                    <span id="cmCaptionBadge" class="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full border bg-slate-800 text-slate-300 border-slate-700">
+                      Score: --%
+                    </span>
+                  </div>
+                  <p id="dossierCaptionText" class="text-xs text-slate-300 leading-relaxed"></p>
+                </div>
+
+                <!-- Card c: Acoustic Scene vs. Visual Setting -->
+                <div class="bg-dark-850 p-4 rounded-xl border border-slate-800 space-y-2">
+                  <div class="flex items-center justify-between">
+                    <span class="text-xs font-bold text-purple-400 flex items-center space-x-1.5 uppercase tracking-wider">
+                      <i class="fa-solid fa-mountain-sun"></i>
+                      <span>Acoustic Scene vs. Visual Setting</span>
+                    </span>
+                    <span id="cmSceneBadge" class="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full border bg-emerald-500/20 text-emerald-300 border-emerald-500/30">
+                      Consistent
+                    </span>
+                  </div>
+                  <p id="dossierSceneText" class="text-xs text-slate-300 leading-relaxed"></p>
+                </div>
+
+                <!-- Card d: Speech Transcript vs. Claimed Context -->
+                <div class="bg-dark-850 p-4 rounded-xl border border-slate-800 space-y-2">
+                  <div class="flex items-center justify-between">
+                    <span class="text-xs font-bold text-amber-400 flex items-center space-x-1.5 uppercase tracking-wider">
+                      <i class="fa-solid fa-comments"></i>
+                      <span>Speech Transcript vs. Claimed Context</span>
+                    </span>
+                    <span id="cmTranscriptBadge" class="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full border bg-emerald-500/20 text-emerald-300 border-emerald-500/30">
+                      Context Verified
+                    </span>
+                  </div>
+                  <p id="dossierTranscriptText" class="text-xs text-slate-300 leading-relaxed"></p>
+                </div>
+
+              </div>
+            </div>
+
+            <!-- Detected Evidence Screenshots Card -->
+            <div id="dossierScreenshotsContainer" class="space-y-3 pt-3 border-t border-slate-800/80 hidden">
+              <div class="flex items-center justify-between">
+                <span class="text-xs font-bold text-white uppercase tracking-wider flex items-center space-x-1.5">
+                  <i class="fa-solid fa-crosshairs text-rose-400"></i>
+                  <span>Detected Evidence Screenshots</span>
+                </span>
+                <span class="text-[10px] text-slate-400 font-mono">Annotated Bounding Boxes & Verification Keyframes</span>
+              </div>
+              <div id="dossierScreenshotsList" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                <!-- Dynamically Populated -->
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Sub-Tab 2: Evidence Timeline -->
+        <div id="dossierTabTimeline" class="dossier-tab-content hidden space-y-6">
+          <div class="bg-dark-900 rounded-2xl p-6 border border-slate-800 space-y-4">
+            <span class="text-xs font-bold text-white uppercase tracking-wider block">Chronological Anomaly Timeline</span>
+            <div id="timelineEventsContainer"></div>
+          </div>
+        </div>
+
+        <!-- Sub-Tab 3: Correlation Graph -->
+        <div id="dossierTabNetwork" class="dossier-tab-content hidden space-y-6">
+          <div class="bg-dark-900 rounded-2xl p-6 border border-slate-800 space-y-3">
+            <div class="flex items-center justify-between">
+              <span class="text-xs font-bold text-white uppercase tracking-wider">Multi-Modal Correlation Network</span>
+              <span class="text-[10px] text-slate-500 font-mono">Drag nodes to explore relationship weights</span>
+            </div>
+            <div id="correlationGraphContainer" class="h-96 rounded-xl bg-dark-950 border border-slate-800 relative overflow-hidden"></div>
+          </div>
+        </div>
+
+        <!-- Sub-Tab 4: Visuals & ELA -->
+        <div id="dossierTabVisuals" class="dossier-tab-content hidden space-y-6">
+          <div class="bg-dark-900 rounded-2xl p-6 border border-slate-800 space-y-4">
+            <span class="text-xs font-bold text-white uppercase tracking-wider block">Error Level Analysis (ELA) Compression Heatmap</span>
+            <div class="h-80 rounded-xl overflow-hidden bg-black flex items-center justify-center border border-slate-800">
+              <img id="dossierElaHeatmap" class="max-h-full max-w-full object-contain" alt="ELA Heatmap">
+            </div>
+          </div>
+        </div>
+
+        <!-- Sub-Tab 5: Provenance -->
+        <div id="dossierTabProvenance" class="dossier-tab-content hidden space-y-6">
+          <div class="bg-dark-900 rounded-2xl p-6 border border-slate-800 space-y-4">
+            <span class="text-xs font-bold text-white uppercase tracking-wider block">Cryptographic Provenance & EXIF Metadata</span>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
+              <div class="bg-dark-850 p-4 rounded-xl border border-slate-800 space-y-1">
+                <span class="text-[10px] font-mono text-slate-400 uppercase font-bold">SHA-256 Hash</span>
+                <p id="provHashText" class="font-mono text-cyan-400 font-bold break-all"></p>
+              </div>
+              <div class="bg-dark-850 p-4 rounded-xl border border-slate-800 space-y-1">
+                <span class="text-[10px] font-mono text-slate-400 uppercase font-bold">Media Type & Duration</span>
+                <p class="text-slate-200"><span id="provMediaType">video</span> (<span id="provDuration">0s</span>)</p>
+              </div>
+              <div class="bg-dark-850 p-4 rounded-xl border border-slate-800 space-y-1">
+                <span class="text-[10px] font-mono text-slate-400 uppercase font-bold">Camera Make & Model</span>
+                <p class="text-slate-200"><span id="provCameraMake">Stripped</span> / <span id="provCameraModel">None</span></p>
+              </div>
+              <div class="bg-dark-850 p-4 rounded-xl border border-slate-800 space-y-1">
+                <span class="text-[10px] font-mono text-slate-400 uppercase font-bold">Software Tags</span>
+                <p id="provSoftware" class="text-slate-200">None detected</p>
+              </div>
+            </div>
+            <div class="p-3 bg-dark-850 rounded-xl border border-slate-800 text-xs text-slate-400">
+              <span class="text-slate-300 font-bold">Platform Recompression Note:</span> <span id="provPlatformNote">Standard platform recompression observed.</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Sub-Tab 6: Draft Takedown -->
+        <div id="dossierTabTakedown" class="dossier-tab-content hidden space-y-6">
+          <div class="bg-dark-900 rounded-2xl p-6 border border-slate-800 space-y-4">
+            <div class="flex items-center justify-between">
+              <span class="text-xs font-bold text-white uppercase tracking-wider">Formal Platform Takedown Notice</span>
+              <button onclick="copyToClipboard(document.getElementById('dossierTakedownText').value)" class="px-3 py-1.5 rounded-lg bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 text-xs font-semibold border border-cyan-500/30 transition flex items-center space-x-1.5">
+                <i class="fa-solid fa-copy"></i>
+                <span>Copy Notice</span>
+              </button>
+            </div>
+            <textarea id="dossierTakedownText" rows="12" readonly class="w-full rounded-xl bg-dark-950 font-mono text-[11px] text-slate-300 border border-slate-800 p-4 leading-relaxed outline-none"></textarea>
+          </div>
+        </div>
+      </section>
+
+    </main>
+  </div>
+
+
+  <!-- ============================================================================== -->
+  <!-- Grounded AI Forensic Assistant Slide-Over Drawer -->
+  <!-- ============================================================================== -->
+  <div id="assistantBackdrop" class="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 hidden transition-opacity"></div>
+
+  <div id="assistantDrawer" class="fixed right-0 top-0 bottom-0 w-full sm:w-[460px] bg-dark-900 border-l border-slate-800 z-50 shadow-2xl flex flex-col transform translate-x-full transition-transform duration-300 ease-in-out">
+    <!-- Drawer Header -->
+    <div class="p-4 border-b border-slate-800 flex items-center justify-between bg-dark-850">
+      <div class="flex items-center space-x-3">
+        <div class="w-8 h-8 rounded-lg bg-cyan-500/20 text-cyan-400 flex items-center justify-center text-sm border border-cyan-500/30">
+          <i class="fa-solid fa-robot"></i>
+        </div>
+        <div>
+          <span class="text-xs font-bold text-white block">AI Forensic Assistant</span>
+          <span class="text-[10px] text-slate-400 font-mono">Bound to: <code id="asstActiveShaBadge" class="text-cyan-400">None Active</code></span>
         </div>
       </div>
+      <button id="closeAssistantBtn" class="p-1.5 rounded-lg hover:bg-slate-800 text-slate-400 hover:text-white transition">
+        <i class="fa-solid fa-xmark"></i>
+      </button>
+    </div>
 
-      <!-- 3-Way Media Origin Assessment Cards -->
-      <div class="grid grid-cols-1 md:grid-cols-3 gap-5">
-        <!-- 1. Deepfake Face Manipulation -->
-        <div class="bg-dark-900 rounded-2xl border border-slate-800 p-5 shadow-lg flex flex-col justify-between space-y-4">
-          <div>
-            <div class="flex items-center justify-between mb-3">
-              <span class="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center space-x-2">
-                <i class="fa-solid fa-user-ninja text-cyan-400"></i>
-                <span>Face Manipulation</span>
-              </span>
-              <span id="badgeFace" class="px-2.5 py-0.5 rounded text-[11px] font-bold uppercase bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
-                Low
-              </span>
-            </div>
-            <h4 class="text-sm font-semibold text-white mb-1.5">Deepfake Face Swap & Warping</h4>
-            <p id="reasonFace" class="text-xs text-slate-300 leading-relaxed">
-              Targeted face crop classifier and ELA heatmap show natural skin boundary grain and facial micro-features.
-            </p>
-          </div>
-          <div class="text-[11px] text-slate-500 pt-2 border-t border-slate-800/80">
-            Model: dima806/deepfake_vs_real (Face Crops)
-          </div>
-        </div>
+    <!-- Suggested Question Chips -->
+    <div class="p-3 bg-dark-950/60 border-b border-slate-800 flex items-center space-x-2 overflow-x-auto scrollbar-thin">
+      <button data-asst-chip="Was face manipulation or face-swap detected?" class="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-[10px] font-semibold text-slate-300 whitespace-nowrap transition border border-slate-700 shrink-0">
+        Face Swaps?
+      </button>
+      <button data-asst-chip="Is the speech audio cloned or dubbed?" class="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-[10px] font-semibold text-slate-300 whitespace-nowrap transition border border-slate-700 shrink-0">
+        Voice Cloned?
+      </button>
+      <button data-asst-chip="What camera or software tags were found in EXIF?" class="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-[10px] font-semibold text-slate-300 whitespace-nowrap transition border border-slate-700 shrink-0">
+        Camera Tags?
+      </button>
+      <button data-asst-chip="Summarize key evidence for takedown" class="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-[10px] font-semibold text-slate-300 whitespace-nowrap transition border border-slate-700 shrink-0">
+        Takedown Summary
+      </button>
+    </div>
 
-        <!-- 2. AI Generated Visuals -->
-        <div class="bg-dark-900 rounded-2xl border border-slate-800 p-5 shadow-lg flex flex-col justify-between space-y-4">
-          <div>
-            <div class="flex items-center justify-between mb-3">
-              <span class="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center space-x-2">
-                <i class="fa-solid fa-wand-magic-sparkles text-teal-400"></i>
-                <span>AI-Generated Visuals</span>
-              </span>
-              <span id="badgeVisual" class="px-2.5 py-0.5 rounded text-[11px] font-bold uppercase bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
-                Low
-              </span>
-            </div>
-            <h4 class="text-sm font-semibold text-white mb-1.5">Generative Video / Image Model</h4>
-            <p id="reasonVisual" class="text-xs text-slate-300 leading-relaxed">
-              Temporal flicker check shows consistent optical geometry with continuous edge gradients.
-            </p>
-          </div>
-          <div class="text-[11px] text-slate-500 pt-2 border-t border-slate-800/80">
-            Metrics: Temporal Flicker & Full-Frame ViT
-          </div>
-        </div>
-
-        <!-- 3. Voice Manipulation / Other Voice -->
-        <div class="bg-dark-900 rounded-2xl border border-slate-800 p-5 shadow-lg flex flex-col justify-between space-y-4">
-          <div>
-            <div class="flex items-center justify-between mb-3">
-              <span class="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center space-x-2">
-                <i class="fa-solid fa-microphone-lines text-indigo-400"></i>
-                <span>Voice & Dubbing</span>
-              </span>
-              <span id="badgeVoice" class="px-2.5 py-0.5 rounded text-[11px] font-bold uppercase bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
-                Low
-              </span>
-            </div>
-            <h4 class="text-sm font-semibold text-white mb-1.5">Voice Clone or Dubbed Audio</h4>
-            <p id="reasonVoice" class="text-xs text-slate-300 leading-relaxed">
-              Active speech segments match natural acoustic resonance and lip-sync cadence.
-            </p>
-          </div>
-          <div class="text-[11px] text-slate-500 pt-2 border-t border-slate-800/80">
-            Model: wav2vec2-deepfake + MediaPipe RMS
-          </div>
-        </div>
-      </div>
-
-      <!-- Executive Forensic Summary -->
-      <div class="bg-dark-900 rounded-2xl border border-slate-800 p-6 shadow-lg space-y-3">
-        <h3 class="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center space-x-2">
-          <i class="fa-solid fa-brain text-cyan-400"></i>
-          <span>Forensic Correlation Summary</span>
-        </h3>
-        <p id="summaryText" class="text-sm text-slate-200 leading-relaxed font-normal">
-          Multi-modal forensic examination completed.
+    <!-- Messages Container -->
+    <div id="asstChatMessages" class="flex-1 p-4 overflow-y-auto space-y-4 scrollbar-thin">
+      <div class="bg-dark-850 border border-slate-800 text-slate-300 rounded-xl p-3.5 text-xs space-y-1.5">
+        <p class="font-bold text-cyan-400 flex items-center space-x-1.5">
+          <i class="fa-solid fa-shield-halved"></i>
+          <span>Telemetry Grounded Assistant</span>
+        </p>
+        <p class="leading-relaxed">
+          I am strictly grounded in the verified signals, keyframe anomalies, and acoustic features of the active investigation. Ask me about specific forensic scores, lip-sync, or metadata.
         </p>
       </div>
+    </div>
 
-      <!-- 4 Cross-Modal Correlation Cards -->
-      <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
-        <!-- 1. Lip-Sync & Dubbed Voice -->
-        <div class="bg-dark-900 rounded-2xl border border-slate-800 p-5 shadow-lg space-y-3">
-          <div class="flex items-center justify-between">
-            <span class="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center space-x-2">
-              <i class="fa-solid fa-lips text-pink-400"></i>
-              <span>Lip-Sync & Speech Dynamics</span>
-            </span>
-            <span id="lipSyncScoreBadge" class="text-xs font-mono font-semibold text-slate-300">r = 0.42</span>
-          </div>
-          <p id="crossModalLipSync" class="text-xs text-slate-300 leading-relaxed">
-            Evaluating acoustic energy correlation against facial mouth-opening landmarks.
-          </p>
-        </div>
-
-        <!-- 2. Caption vs Content (CLIP) -->
-        <div class="bg-dark-900 rounded-2xl border border-slate-800 p-5 shadow-lg space-y-3">
-          <div class="flex items-center justify-between">
-            <span class="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center space-x-2">
-              <i class="fa-solid fa-quote-left text-cyan-400"></i>
-              <span>Caption vs. Content Alignment</span>
-            </span>
-            <span id="clipScoreBadge" class="text-xs font-mono font-semibold text-cyan-400">Score: 0.32</span>
-          </div>
-          <div class="w-full bg-slate-800 rounded-full h-2 overflow-hidden">
-            <div id="clipProgressBar" class="bg-gradient-to-r from-cyan-500 to-teal-400 h-2 rounded-full" style="width: 50%"></div>
-          </div>
-          <p id="crossModalCaption" class="text-xs text-slate-300 leading-relaxed">
-            CLIP vision-language semantic alignment analysis.
-          </p>
-        </div>
-
-        <!-- 3. Audio vs Visual Scene -->
-        <div class="bg-dark-900 rounded-2xl border border-slate-800 p-5 shadow-lg space-y-3">
-          <div class="flex items-center justify-between">
-            <span class="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center space-x-2">
-              <i class="fa-solid fa-mountain-sun text-emerald-400"></i>
-              <span>Acoustic Scene vs. Visual Setting</span>
-            </span>
-            <span id="sceneStatusBadge" class="text-xs font-semibold text-emerald-400">Consistent</span>
-          </div>
-          <p id="crossModalScene" class="text-xs text-slate-300 leading-relaxed">
-            Cross-verifying background audio tags (AST AudioSet) against visual zero-shot scenes.
-          </p>
-        </div>
-
-        <!-- 4. Transcript vs Caption -->
-        <div class="bg-dark-900 rounded-2xl border border-slate-800 p-5 shadow-lg space-y-3">
-          <div class="flex items-center justify-between">
-            <span class="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center space-x-2">
-              <i class="fa-solid fa-comment-dots text-indigo-400"></i>
-              <span>Speech Transcript vs. Claimed Context</span>
-            </span>
-            <span id="transStatusBadge" class="text-xs font-semibold text-slate-300">Verified</span>
-          </div>
-          <p id="crossModalTranscript" class="text-xs text-slate-300 leading-relaxed">
-            Whisper transcription checked against accompanying post claims.
-          </p>
-        </div>
-      </div>
-
-      <!-- Flagged Evidence Gallery (ELA Heatmap & Frames) -->
-      <div class="bg-dark-900 rounded-2xl border border-slate-800 p-6 shadow-lg space-y-4">
-        <h3 class="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center space-x-2">
-          <i class="fa-solid fa-images text-cyan-400"></i>
-          <span>Forensic Visual Artifacts & ELA Heatmap</span>
-        </h3>
-
-        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4" id="artifactsGrid">
-          <!-- Populated dynamically via JS -->
-        </div>
-
-        <!-- Flagged Evidence List -->
-        <div class="mt-4 pt-4 border-t border-slate-800 space-y-2">
-          <h4 class="text-xs font-semibold uppercase text-slate-400">Flagged Indicators Log</h4>
-          <ul id="flaggedEvidenceList" class="space-y-2">
-            <!-- Items populated dynamically -->
-          </ul>
-        </div>
-      </div>
-
-      <!-- Limitations & Human Review Section -->
-      <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
-        <!-- Limitations Box -->
-        <div class="bg-dark-900 rounded-2xl border border-slate-800 p-5 shadow-lg space-y-3">
-          <h3 class="text-xs font-bold uppercase tracking-wider text-amber-400 flex items-center space-x-2">
-            <i class="fa-solid fa-circle-exclamation"></i>
-            <span>Platform Limitations & Uncertainty</span>
-          </h3>
-          <ul id="limitationsList" class="space-y-1.5 text-xs text-slate-300 list-disc list-inside leading-relaxed">
-            <li>Social media recompression applied.</li>
-          </ul>
-        </div>
-
-        <!-- Human Investigator Checklist -->
-        <div class="bg-dark-900 rounded-2xl border border-slate-800 p-5 shadow-lg space-y-3">
-          <h3 class="text-xs font-bold uppercase tracking-wider text-cyan-400 flex items-center space-x-2">
-            <i class="fa-solid fa-clipboard-check"></i>
-            <span>Human Investigator Verification Checklist</span>
-          </h3>
-          <div class="space-y-2 text-xs text-slate-300">
-            <label class="flex items-center space-x-2 cursor-pointer">
-              <input type="checkbox" class="rounded bg-slate-800 border-slate-700 text-cyan-500 focus:ring-0">
-              <span>Execute reverse image search on earliest keyframe</span>
-            </label>
-            <label class="flex items-center space-x-2 cursor-pointer">
-              <input type="checkbox" class="rounded bg-slate-800 border-slate-700 text-cyan-500 focus:ring-0">
-              <span>Inspect high-frequency facial boundaries and ears for blending seams</span>
-            </label>
-            <label class="flex items-center space-x-2 cursor-pointer">
-              <input type="checkbox" class="rounded bg-slate-800 border-slate-700 text-cyan-500 focus:ring-0">
-              <span>Verify speaker timbre against verified authentic audio recording</span>
-            </label>
-            <label class="flex items-center space-x-2 cursor-pointer">
-              <input type="checkbox" class="rounded bg-slate-800 border-slate-700 text-cyan-500 focus:ring-0">
-              <span>Cross-check uploader provenance and earliest known appearance date</span>
-            </label>
-          </div>
-          <div class="pt-2">
-            <textarea id="investigatorNotes" rows="2" class="w-full rounded-lg bg-dark-850 border border-slate-800 text-xs p-2 text-slate-200 placeholder-slate-500 outline-none" placeholder="Investigator personal case notes..."></textarea>
-          </div>
-        </div>
-      </div>
-
-      <!-- Actions Bar: Export PDF, Download JSON, Report -->
-      <div class="flex flex-wrap items-center justify-between gap-3 pt-2">
-        <div class="flex items-center space-x-3">
-          <button id="exportPdfBtn" class="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold border border-slate-700 transition flex items-center space-x-2">
-            <i class="fa-solid fa-file-pdf text-rose-400"></i>
-            <span>Export PDF Report</span>
-          </button>
-          <button id="downloadJsonBtn" class="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold border border-slate-700 transition flex items-center space-x-2">
-            <i class="fa-solid fa-file-code text-cyan-400"></i>
-            <span>Download JSON</span>
-          </button>
-        </div>
-
-        <button id="openReportModalBtn2" class="px-5 py-2.5 rounded-xl bg-gradient-to-r from-rose-600 to-red-600 hover:from-rose-500 hover:to-red-500 text-white text-xs font-bold shadow-lg shadow-rose-600/20 transition flex items-center space-x-2">
-          <i class="fa-solid fa-shield-virus"></i>
-          <span>Report & File Takedown Notice</span>
-        </button>
-      </div>
-
-    </section>
-
-  </main>
-
-  <!-- ============================================================================== -->
-  <!-- MODAL: Human Review & Deepfake Takedown Submission -->
-  <!-- ============================================================================== -->
-  <div id="reportModal" class="hidden fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-    <div class="bg-dark-900 border border-slate-800 rounded-2xl max-w-2xl w-full p-6 space-y-5 shadow-2xl overflow-y-auto max-h-[90vh] scrollbar-thin">
-      <div class="flex items-center justify-between border-b border-slate-800 pb-3">
-        <div class="flex items-center space-x-2.5">
-          <div class="w-8 h-8 rounded-lg bg-rose-500/20 text-rose-400 flex items-center justify-center text-sm">
-            <i class="fa-solid fa-file-shield"></i>
-          </div>
-          <div>
-            <h3 class="text-sm font-bold text-white uppercase tracking-wider">File Content Takedown Notice</h3>
-            <p class="text-xs text-slate-400">Human-verified forensic incident report</p>
-          </div>
-        </div>
-        <button id="closeReportModalBtn" class="text-slate-400 hover:text-white transition">
-          <i class="fa-solid fa-xmark text-lg"></i>
-        </button>
-      </div>
-
-      <!-- Editable Draft Takedown Report -->
-      <div>
-        <label class="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1.5">Draft Incident & Takedown Report (Editable)</label>
-        <textarea id="takedownReportText" rows="10" class="w-full rounded-xl bg-dark-950 border border-slate-800 font-mono text-xs text-slate-200 p-3.5 focus:border-cyan-500 outline-none leading-relaxed scrollbar-thin"></textarea>
-      </div>
-
-      <!-- Quick Escalation Portals -->
-      <div class="bg-dark-850 rounded-xl p-3.5 border border-slate-800 space-y-2">
-        <span class="text-[11px] font-bold uppercase tracking-wider text-slate-400">Quick Escalation Portals:</span>
-        <div class="flex flex-wrap gap-2 text-xs">
-          <a href="https://about.instagram.com/community/safety" target="_blank" rel="noopener" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-rose-300 border border-slate-700 flex items-center space-x-1.5 transition">
-            <i class="fa-brands fa-instagram"></i>
-            <span>Instagram Report Center</span>
-            <i class="fa-solid fa-arrow-up-right-from-square text-[10px]"></i>
-          </a>
-          <a href="https://cybercrime.gov.in" target="_blank" rel="noopener" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-slate-700 flex items-center space-x-1.5 transition">
-            <i class="fa-solid fa-building-shield"></i>
-            <span>National Cyber Crime Portal</span>
-            <i class="fa-solid fa-arrow-up-right-from-square text-[10px]"></i>
-          </a>
-        </div>
-      </div>
-
-      <!-- Review Confirmation Checkbox -->
-      <label class="flex items-start space-x-3 text-xs text-slate-300 cursor-pointer pt-1">
-        <input type="checkbox" id="confirmVerificationCheck" class="mt-0.5 rounded bg-slate-800 border-slate-700 text-cyan-500 focus:ring-0">
-        <span>I confirm that I have reviewed the forensic indicators, verified evidence integrity, and validate submitting this formal incident notice.</span>
-      </label>
-
-      <!-- Modal Action Buttons -->
-      <div class="flex flex-col sm:flex-row items-center justify-between gap-3 pt-2">
-        <button id="copyTakedownBtn" class="w-full sm:w-auto px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold border border-slate-700 transition flex items-center justify-center space-x-2">
-          <i class="fa-regular fa-copy"></i>
-          <span>Copy Takedown Notice</span>
-        </button>
-
-        <button id="submitIncidentBtn" class="w-full sm:w-auto px-5 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold shadow-lg shadow-rose-600/30 transition flex items-center justify-center space-x-2">
+    <!-- Input Footer -->
+    <div class="p-3.5 border-t border-slate-800 bg-dark-850">
+      <div class="relative flex items-center">
+        <input type="text" id="asstChatInput" placeholder="Ask a forensic question about this media..." class="w-full pl-3.5 pr-10 py-2.5 rounded-xl bg-dark-900 border border-slate-800 focus:border-cyan-500 text-xs text-slate-200 outline-none transition">
+        <button id="asstSendBtn" class="absolute right-2 p-1.5 rounded-lg bg-cyan-500 hover:bg-cyan-400 text-white text-xs transition">
           <i class="fa-solid fa-paper-plane"></i>
-          <span>Confirm & Submit Report</span>
         </button>
-      </div>
-
-      <!-- Submission Result Banner -->
-      <div id="incidentResultBanner" class="hidden p-3 rounded-xl bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-xs flex items-center space-x-2">
-        <i class="fa-solid fa-circle-check text-sm"></i>
-        <span>Incident successfully logged! Ticket ID: <strong id="assignedTicketId" class="font-mono font-bold">TL-2026-001</strong></span>
       </div>
     </div>
   </div>
 
+
   <!-- ============================================================================== -->
-  <!-- MODAL: Reported Incidents Log -->
+  <!-- Loading Modal -->
   <!-- ============================================================================== -->
-  <div id="incidentsModal" class="hidden fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-    <div class="bg-dark-900 border border-slate-800 rounded-2xl max-w-3xl w-full p-6 space-y-4 shadow-2xl overflow-y-auto max-h-[85vh] scrollbar-thin">
-      <div class="flex items-center justify-between border-b border-slate-800 pb-3">
-        <div class="flex items-center space-x-2.5">
-          <div class="w-8 h-8 rounded-lg bg-cyan-500/20 text-cyan-400 flex items-center justify-center text-sm">
-            <i class="fa-solid fa-book-bookmark"></i>
+  <div id="loadingModal" class="fixed inset-0 bg-black/75 backdrop-blur-sm z-50 flex items-center justify-center hidden">
+    <div class="bg-dark-900 border border-slate-800 rounded-2xl p-6 max-w-sm w-full mx-4 text-center space-y-4 shadow-2xl">
+      <div class="w-12 h-12 rounded-full bg-cyan-500/10 text-cyan-400 flex items-center justify-center text-xl mx-auto border border-cyan-500/20">
+        <i class="fa-solid fa-circle-notch fa-spin"></i>
+      </div>
+      <div>
+        <h3 class="text-sm font-bold text-white">Forensic Analysis In Progress</h3>
+        <p id="loadingModalText" class="text-xs text-slate-400 mt-1">Executing multi-modal inspection...</p>
+      </div>
+    </div>
+  </div>
+
+
+  <!-- ============================================================================== -->
+  <!-- Log Incident Modal -->
+  <!-- ============================================================================== -->
+  <div id="incidentReportModal" class="fixed inset-0 bg-black/75 backdrop-blur-sm z-50 flex items-center justify-center hidden">
+    <div class="bg-dark-900 border border-slate-800 rounded-2xl p-6 max-w-lg w-full mx-4 space-y-4 shadow-2xl">
+      <div>
+        <h3 class="text-base font-bold text-white flex items-center space-x-2">
+          <i class="fa-solid fa-flag text-rose-400"></i>
+          <span>Log Deepfake Incident Report</span>
+        </h3>
+        <p class="text-xs text-slate-400 mt-0.5">Saves a formal ticket (TL-2026-XXX) with verified provenance for takedown submission.</p>
+      </div>
+
+      <div class="space-y-3 text-xs">
+        <div>
+          <label class="block text-slate-400 font-bold mb-1">SHA-256 Provenance Hash</label>
+          <input type="text" id="incidentShaInput" readonly class="w-full bg-dark-950 font-mono text-[11px] p-2.5 rounded-lg border border-slate-800 text-slate-400">
+        </div>
+
+        <div>
+          <label class="block text-slate-400 font-bold mb-1">Target Media / URL</label>
+          <input type="text" id="incidentSourceInput" class="w-full bg-dark-850 p-2.5 rounded-lg border border-slate-800 text-slate-200">
+        </div>
+
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="block text-slate-400 font-bold mb-1">Manipulation Category</label>
+            <select id="incidentTypeSelect" class="w-full bg-dark-850 p-2.5 rounded-lg border border-slate-800 text-slate-200">
+              <option value="Face-Swap Deepfake">Face-Swap Deepfake</option>
+              <option value="AI-Generated Visuals">AI-Generated Visuals</option>
+              <option value="Voice Clone / Dubbing">Voice Clone / Dubbing</option>
+              <option value="Out-of-Context Deception">Out-of-Context Deception</option>
+            </select>
           </div>
           <div>
-            <h3 class="text-sm font-bold text-white uppercase tracking-wider">Logged Forensic Incidents</h3>
-            <p class="text-xs text-slate-400">Audit trail of verified deepfakes</p>
+            <label class="block text-slate-400 font-bold mb-1">Platform</label>
+            <select id="incidentPlatformSelect" class="w-full bg-dark-850 p-2.5 rounded-lg border border-slate-800 text-slate-200">
+              <option value="Instagram">Instagram</option>
+              <option value="YouTube">YouTube</option>
+              <option value="TikTok">TikTok</option>
+              <option value="X / Twitter">X / Twitter</option>
+              <option value="Direct Web">Direct Web</option>
+            </select>
           </div>
         </div>
-        <button id="closeIncidentsModalBtn" class="text-slate-400 hover:text-white transition">
-          <i class="fa-solid fa-xmark text-lg"></i>
-        </button>
+
+        <div>
+          <label class="block text-slate-400 font-bold mb-1">Investigator Notes</label>
+          <textarea id="incidentNotesInput" rows="2" class="w-full bg-dark-850 p-2.5 rounded-lg border border-slate-800 text-slate-200" placeholder="Optional investigator context..."></textarea>
+        </div>
+
+        <div>
+          <label class="block text-slate-400 font-bold mb-1">Generated Platform Takedown Notice</label>
+          <textarea id="incidentTakedownText" rows="3" readonly class="w-full bg-dark-950 font-mono text-[10px] p-2 rounded-lg border border-slate-800 text-slate-300 select-all"></textarea>
+        </div>
       </div>
 
-      <div id="incidentsListContainer" class="space-y-3">
-        <!-- Rendered dynamically -->
-        <p class="text-xs text-slate-500 py-6 text-center">Loading incident records...</p>
+      <div class="flex items-center justify-end space-x-2 pt-2">
+        <button id="cancelIncidentBtn" class="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-300 transition">
+          Cancel
+        </button>
+        <button id="submitIncidentBtn" class="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-xs font-bold text-white transition">
+          Confirm Ticket
+        </button>
       </div>
     </div>
   </div>
 
-  <!-- ============================================================================== -->
-  <!-- Toast Notification Container -->
-  <!-- ============================================================================== -->
+
+  <!-- Toast Notifications Container -->
   <div id="toastContainer" class="fixed bottom-5 right-5 z-50 space-y-2 pointer-events-none"></div>
 
-  <!-- ============================================================================== -->
-  <!-- Client JavaScript Logic -->
-  <!-- ============================================================================== -->
-  <script>
-    // State management
-    let currentReport = null;
-    let selectedFile = null;
-    let scanHistory = JSON.parse(localStorage.getItem('truthlens_history') || '[]');
-
-    // Toast helper
-    function showToast(message, type = 'info') {
-      const container = document.getElementById('toastContainer');
-      const toast = document.createElement('div');
-      const colors = {
-        success: 'bg-emerald-950 border-emerald-500 text-emerald-200',
-        error: 'bg-rose-950 border-rose-500 text-rose-200',
-        info: 'bg-slate-900 border-cyan-500 text-cyan-200',
-      }[type] || 'bg-slate-900 border-slate-700 text-white';
-
-      toast.className = `pointer-events-auto p-3.5 rounded-xl border shadow-xl text-xs flex items-center space-x-2 transition-all duration-300 transform translate-y-4 opacity-0 ${colors}`;
-      toast.innerHTML = `<i class="fa-solid ${type === 'success' ? 'fa-circle-check text-emerald-400' : type === 'error' ? 'fa-triangle-exclamation text-rose-400' : 'fa-circle-info text-cyan-400'}"></i><span>${message}</span>`;
-      container.appendChild(toast);
-
-      setTimeout(() => {
-        toast.classList.remove('translate-y-4', 'opacity-0');
-      }, 10);
-
-      setTimeout(() => {
-        toast.classList.add('opacity-0', 'translate-y-4');
-        setTimeout(() => toast.remove(), 300);
-      }, 4000);
-    }
-
-    // Tab Switching
-    const tabUploadBtn = document.getElementById('tabUploadBtn');
-    const tabUrlBtn = document.getElementById('tabUrlBtn');
-    const tabUploadContent = document.getElementById('tabUploadContent');
-    const tabUrlContent = document.getElementById('tabUrlContent');
-
-    tabUploadBtn.addEventListener('click', () => {
-      tabUploadBtn.className = "flex items-center space-x-2 py-3 px-5 text-sm font-semibold border-b-2 border-cyan-400 text-cyan-400 transition";
-      tabUrlBtn.className = "flex items-center space-x-2 py-3 px-5 text-sm font-medium border-b-2 border-transparent text-slate-400 hover:text-slate-200 transition";
-      tabUploadContent.classList.remove('hidden');
-      tabUrlContent.classList.add('hidden');
-    });
-
-    tabUrlBtn.addEventListener('click', () => {
-      tabUrlBtn.className = "flex items-center space-x-2 py-3 px-5 text-sm font-semibold border-b-2 border-cyan-400 text-cyan-400 transition";
-      tabUploadBtn.className = "flex items-center space-x-2 py-3 px-5 text-sm font-medium border-b-2 border-transparent text-slate-400 hover:text-slate-200 transition";
-      tabUrlContent.classList.remove('hidden');
-      tabUploadContent.classList.add('hidden');
-    });
-
-    // File Input & Drag/Drop Handling
-    const dropZone = document.getElementById('dropZone');
-    const fileInput = document.getElementById('fileInput');
-    const previewContainer = document.getElementById('previewContainer');
-    const previewMediaWrapper = document.getElementById('previewMediaWrapper');
-    const previewFileName = document.getElementById('previewFileName');
-    const previewFileSize = document.getElementById('previewFileSize');
-    const previewMediaType = document.getElementById('previewMediaType');
-    const clearFileBtn = document.getElementById('clearFileBtn');
-
-    dropZone.addEventListener('click', () => fileInput.click());
-
-    ['dragenter', 'dragover'].forEach(name => {
-      dropZone.addEventListener(name, (e) => {
-        e.preventDefault();
-        dropZone.classList.add('border-cyan-400', 'bg-cyan-500/10');
-      });
-    });
-
-    ['dragleave', 'drop'].forEach(name => {
-      dropZone.addEventListener(name, (e) => {
-        e.preventDefault();
-        dropZone.classList.remove('border-cyan-400', 'bg-cyan-500/10');
-      });
-    });
-
-    dropZone.addEventListener('drop', (e) => {
-      if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-        handleFileSelect(e.dataTransfer.files[0]);
-      }
-    });
-
-    fileInput.addEventListener('change', (e) => {
-      if (e.target.files && e.target.files.length > 0) {
-        handleFileSelect(e.target.files[0]);
-      }
-    });
-
-    function handleFileSelect(file) {
-      selectedFile = file;
-      previewFileName.textContent = file.name;
-      previewFileSize.textContent = (file.size / (1024 * 1024)).toFixed(2) + ' MB';
-      previewMediaWrapper.innerHTML = '';
-
-      const isVideo = file.type.startsWith('video/');
-      const isImage = file.type.startsWith('image/');
-      const isAudio = file.type.startsWith('audio/');
-
-      if (isVideo) {
-        previewMediaType.textContent = 'Video';
-        const video = document.createElement('video');
-        video.src = URL.createObjectURL(file);
-        video.controls = true;
-        video.className = 'w-full h-full object-cover';
-        previewMediaWrapper.appendChild(video);
-      } else if (isImage) {
-        previewMediaType.textContent = 'Picture';
-        const img = document.createElement('img');
-        img.src = URL.createObjectURL(file);
-        img.className = 'w-full h-full object-cover';
-        previewMediaWrapper.appendChild(img);
-      } else if (isAudio) {
-        previewMediaType.textContent = 'Audio';
-        previewMediaWrapper.innerHTML = `<div class="text-3xl text-cyan-400"><i class="fa-solid fa-file-audio"></i></div>`;
-      } else {
-        previewMediaType.textContent = 'Media File';
-        previewMediaWrapper.innerHTML = `<div class="text-3xl text-slate-400"><i class="fa-solid fa-file"></i></div>`;
-      }
-
-      previewContainer.classList.remove('hidden');
-    }
-
-    clearFileBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      selectedFile = null;
-      fileInput.value = '';
-      previewContainer.classList.add('hidden');
-      previewMediaWrapper.innerHTML = '';
-    });
-
-    // 5-Stage Progress Loader Control
-    const progressSection = document.getElementById('progressSection');
-    const stages = [
-      document.getElementById('stage1'),
-      document.getElementById('stage2'),
-      document.getElementById('stage3'),
-      document.getElementById('stage4'),
-      document.getElementById('stage5')
-    ];
-
-    let progressInterval = null;
-
-    function startProgress() {
-      progressSection.classList.remove('hidden');
-      document.getElementById('reportSection').classList.add('hidden');
-
-      stages.forEach((s, idx) => {
-        s.className = "bg-dark-850 rounded-xl p-3.5 border border-slate-800 flex items-start space-x-3 transition opacity-50";
-        s.querySelector('.stage-icon').className = "stage-icon w-8 h-8 rounded-lg bg-slate-800 flex items-center justify-center text-slate-400 text-xs shrink-0";
-        s.querySelector('.stage-icon').innerHTML = `${idx + 1}`;
-      });
-
-      let currentStage = 0;
-      updateStageActive(currentStage);
-
-      progressInterval = setInterval(() => {
-        if (currentStage < 4) {
-          updateStageComplete(currentStage);
-          currentStage++;
-          updateStageActive(currentStage);
-        }
-      }, 2400);
-    }
-
-    function updateStageActive(idx) {
-      if (stages[idx]) {
-        stages[idx].className = "bg-dark-850 rounded-xl p-3.5 border border-cyan-500/50 flex items-start space-x-3 transition opacity-100 ring-1 ring-cyan-500/30";
-        stages[idx].querySelector('.stage-icon').className = "stage-icon w-8 h-8 rounded-lg bg-cyan-500/20 text-cyan-300 flex items-center justify-center text-xs shrink-0";
-        stages[idx].querySelector('.stage-icon').innerHTML = `<i class="fa-solid fa-circle-notch fa-spin"></i>`;
-      }
-    }
-
-    function updateStageComplete(idx) {
-      if (stages[idx]) {
-        stages[idx].className = "bg-dark-850 rounded-xl p-3.5 border border-emerald-500/40 flex items-start space-x-3 transition opacity-90";
-        stages[idx].querySelector('.stage-icon').className = "stage-icon w-8 h-8 rounded-lg bg-emerald-500/20 text-emerald-400 flex items-center justify-center text-xs shrink-0";
-        stages[idx].querySelector('.stage-icon').innerHTML = `<i class="fa-solid fa-check"></i>`;
-      }
-    }
-
-    function finishProgress() {
-      clearInterval(progressInterval);
-      stages.forEach((s, idx) => updateStageComplete(idx));
-      setTimeout(() => {
-        progressSection.classList.add('hidden');
-      }, 600);
-    }
-
-    // Submit File Upload
-    document.getElementById('analyzeUploadBtn').addEventListener('click', async () => {
-      if (!selectedFile) {
-        showToast('Please select or drop a picture, video, or audio file.', 'error');
-        return;
-      }
-
-      const caption = document.getElementById('uploadCaption').value.trim();
-      const formData = new FormData();
-      formData.append('file', selectedFile);
-      if (caption) formData.append('caption', caption);
-
-      startProgress();
-
-      try {
-        const response = await fetch('/analyze/upload', {
-          method: 'POST',
-          body: formData
-        });
-
-        const data = await response.json();
-        finishProgress();
-
-        if (!response.ok) {
-          showToast(data.detail || 'Analysis failed on uploaded file.', 'error');
-          return;
-        }
-
-        renderForensicReport(data);
-      } catch (err) {
-        finishProgress();
-        showToast(`Server communication error: ${err.message}`, 'error');
-      }
-    });
-
-    // Submit URL Analysis
-    document.getElementById('analyzeUrlBtn').addEventListener('click', async () => {
-      const url = document.getElementById('mediaUrl').value.trim();
-      if (!url) {
-        showToast('Please paste a valid Instagram or YouTube URL.', 'error');
-        return;
-      }
-
-      const caption = document.getElementById('urlCaption').value.trim();
-      startProgress();
-
-      try {
-        const response = await fetch('/analyze/url', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ url: url, caption: caption || null })
-        });
-
-        const data = await response.json();
-        finishProgress();
-
-        if (!response.ok) {
-          showToast(data.detail || 'Failed analyzing URL.', 'error');
-          return;
-        }
-
-        renderForensicReport(data);
-      } catch (err) {
-        finishProgress();
-        showToast(`Failed analyzing URL: ${err.message}`, 'error');
-      }
-    });
-
-    // Render Forensic Report
-    function renderForensicReport(data) {
-      currentReport = data;
-      const report = data.report;
-      const telemetry = data.pipeline_telemetry;
-      const artifacts = data.artifacts;
-
-      // Save to recent scan history
-      saveToHistory(report, telemetry);
-
-      // Deepfake Alert Banner
-      const alertBanner = document.getElementById('alertBanner');
-      if (report.deepfake_alert_triggered) {
-        alertBanner.classList.remove('hidden');
-      } else {
-        alertBanner.classList.add('hidden');
-      }
-
-      // Evidence Traceability Bar
-      document.getElementById('reportHashShort').textContent = `${report.sha256_hash.substring(0, 16)}...`;
-      document.getElementById('reportDurationLabel').textContent = `${telemetry.duration_seconds || 0}s`;
-      document.getElementById('reportTimestampLabel').textContent = new Date().toLocaleTimeString();
-      document.getElementById('reportSourceLabel').textContent = telemetry.media_type ? telemetry.media_type.toUpperCase() : 'MEDIA';
-
-      // Verdict & Score Badge
-      const scorePct = Math.round(report.deepfake_probability * 100);
-      document.getElementById('reportScoreLabel').textContent = `${scorePct}%`;
-
-      const verdictBadge = document.getElementById('verdictBadge');
-      verdictBadge.textContent = report.verdict;
-      if (scorePct >= 65 || report.verdict.toLowerCase().includes('deepfake')) {
-        verdictBadge.className = "px-3.5 py-1.5 rounded-lg text-xs font-extrabold uppercase tracking-wider bg-rose-500/20 text-rose-300 border border-rose-500/40";
-      } else if (scorePct >= 35 || report.verdict.toLowerCase().includes('suspicious') || report.verdict.toLowerCase().includes('dubbed')) {
-        verdictBadge.className = "px-3.5 py-1.5 rounded-lg text-xs font-extrabold uppercase tracking-wider bg-amber-500/20 text-amber-300 border border-amber-500/40";
-      } else {
-        verdictBadge.className = "px-3.5 py-1.5 rounded-lg text-xs font-extrabold uppercase tracking-wider bg-emerald-500/20 text-emerald-300 border border-emerald-500/40";
-      }
-
-      // 3 Origin Assessment Cards
-      const origin = report.media_origin_assessment;
-
-      function renderBadge(elId, level) {
-        const el = document.getElementById(elId);
-        el.textContent = level;
-        if (level === 'High') {
-          el.className = "px-2.5 py-0.5 rounded text-[11px] font-bold uppercase bg-rose-500/20 text-rose-400 border border-rose-500/30";
-        } else if (level === 'Moderate') {
-          el.className = "px-2.5 py-0.5 rounded text-[11px] font-bold uppercase bg-amber-500/20 text-amber-400 border border-amber-500/30";
-        } else {
-          el.className = "px-2.5 py-0.5 rounded text-[11px] font-bold uppercase bg-emerald-500/20 text-emerald-400 border border-emerald-500/30";
-        }
-      }
-
-      renderBadge('badgeFace', origin.deepfake_face_manipulation.indicator);
-      document.getElementById('reasonFace').textContent = origin.deepfake_face_manipulation.reason;
-
-      renderBadge('badgeVisual', origin.ai_generated_visuals.indicator);
-      document.getElementById('reasonVisual').textContent = origin.ai_generated_visuals.reason;
-
-      renderBadge('badgeVoice', origin.voice_manipulation_or_other_voice.indicator);
-      document.getElementById('reasonVoice').textContent = origin.voice_manipulation_or_other_voice.reason;
-
-      // Executive Summary
-      document.getElementById('summaryText').textContent = report.summary;
-
-      // 4 Cross Modal Cards
-      const cm = report.cross_modal_findings;
-      document.getElementById('crossModalLipSync').textContent = cm.lip_sync;
-      document.getElementById('crossModalCaption').textContent = cm.caption_vs_content;
-      document.getElementById('crossModalScene').textContent = cm.audio_vs_visual;
-      document.getElementById('crossModalTranscript').textContent = cm.transcript_vs_caption;
-
-      // Extract CLIP similarity score for bar
-      const clipMatch = cm.caption_vs_content.match(/similarity:\s*([0-9.]+)/i);
-      const clipScore = clipMatch ? parseFloat(clipMatch[1]) : 0.3;
-      document.getElementById('clipScoreBadge').textContent = `Score: ${(clipScore * 100).toFixed(0)}%`;
-      document.getElementById('clipProgressBar').style.width = `${Math.min(100, Math.max(10, clipScore * 100))}%`;
-
-      // Gallery: Artifacts Grid (ELA Heatmap + Flagged Frames + Face Crops)
-      const artifactsGrid = document.getElementById('artifactsGrid');
-      artifactsGrid.innerHTML = '';
-
-      if (artifacts.ela_heatmap) {
-        artifactsGrid.innerHTML += `
-          <div class="bg-dark-850 rounded-xl overflow-hidden border border-slate-800 p-2.5 flex flex-col justify-between">
-            <div class="h-32 w-full bg-black rounded-lg overflow-hidden flex items-center justify-center">
-              <img src="${artifacts.ela_heatmap}" alt="ELA Heatmap" class="object-cover w-full h-full hover:scale-105 transition cursor-pointer" onclick="window.open('${artifacts.ela_heatmap}', '_blank')">
-            </div>
-            <div class="pt-2">
-              <span class="text-[10px] font-bold uppercase tracking-wider text-cyan-400">ELA Heatmap</span>
-              <p class="text-[11px] text-slate-300">Compression variance map</p>
-            </div>
-          </div>
-        `;
-      }
-
-      (artifacts.face_crops || []).slice(0, 2).forEach((fc, idx) => {
-        artifactsGrid.innerHTML += `
-          <div class="bg-dark-850 rounded-xl overflow-hidden border border-slate-800 p-2.5 flex flex-col justify-between">
-            <div class="h-32 w-full bg-black rounded-lg overflow-hidden flex items-center justify-center">
-              <img src="${fc}" alt="Face Crop" class="object-cover w-full h-full hover:scale-105 transition cursor-pointer" onclick="window.open('${fc}', '_blank')">
-            </div>
-            <div class="pt-2">
-              <span class="text-[10px] font-bold uppercase tracking-wider text-pink-400">Cropped Face #${idx + 1}</span>
-              <p class="text-[11px] text-slate-300">Targeted face-swap zone</p>
-            </div>
-          </div>
-        `;
-      });
-
-      (artifacts.flagged_frames || []).slice(0, 2).forEach((ff, idx) => {
-        artifactsGrid.innerHTML += `
-          <div class="bg-dark-850 rounded-xl overflow-hidden border border-slate-800 p-2.5 flex flex-col justify-between">
-            <div class="h-32 w-full bg-black rounded-lg overflow-hidden flex items-center justify-center">
-              <img src="${ff}" alt="Flagged Keyframe" class="object-cover w-full h-full hover:scale-105 transition cursor-pointer" onclick="window.open('${ff}', '_blank')">
-            </div>
-            <div class="pt-2">
-              <span class="text-[10px] font-bold uppercase tracking-wider text-teal-400">Keyframe #${idx + 1}</span>
-              <p class="text-[11px] text-slate-300">Sampled video frame</p>
-            </div>
-          </div>
-        `;
-      });
-
-      // Flagged Evidence List
-      const flaggedList = document.getElementById('flaggedEvidenceList');
-      flaggedList.innerHTML = '';
-      if (report.flagged_evidence && report.flagged_evidence.length > 0) {
-        report.flagged_evidence.forEach(ev => {
-          flaggedList.innerHTML += `
-            <li class="p-2.5 rounded-lg bg-dark-850 border border-slate-800 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-1">
-              <div>
-                <span class="font-bold text-slate-200">[${ev.modality.toUpperCase()}] ${ev.indicator}</span>
-                <span class="text-slate-400 ml-1">(${ev.timestamp_or_region}):</span>
-                <span class="text-slate-300 ml-1">${ev.reason}</span>
-              </div>
-            </li>
-          `;
-        });
-      } else {
-        flaggedList.innerHTML = `<li class="text-xs text-slate-400 italic">No acute forensic anomalies flagged.</li>`;
-      }
-
-      // Limitations
-      const limList = document.getElementById('limitationsList');
-      limList.innerHTML = '';
-      (report.limitations_and_caveats || []).forEach(lim => {
-        limList.innerHTML += `<li>${lim}</li>`;
-      });
-
-      // Populate draft takedown text for modal
-      document.getElementById('takedownReportText').value = report.draft_takedown_report || '';
-
-      // Unhide Report Section
-      document.getElementById('reportSection').classList.remove('hidden');
-      document.getElementById('reportSection').scrollIntoView({ behavior: 'smooth' });
-    }
-
-    // Modal Controls: Takedown Report
-    const reportModal = document.getElementById('reportModal');
-    const openReportModalBtn = document.getElementById('openReportModalBtn');
-    const openReportModalBtn2 = document.getElementById('openReportModalBtn2');
-    const closeReportModalBtn = document.getElementById('closeReportModalBtn');
-    const copyTakedownBtn = document.getElementById('copyTakedownBtn');
-    const submitIncidentBtn = document.getElementById('submitIncidentBtn');
-
-    function openModal() {
-      reportModal.classList.remove('hidden');
-      document.getElementById('incidentResultBanner').classList.add('hidden');
-    }
-
-    function closeModal() {
-      reportModal.classList.add('hidden');
-    }
-
-    if (openReportModalBtn) openReportModalBtn.addEventListener('click', openModal);
-    if (openReportModalBtn2) openReportModalBtn2.addEventListener('click', openModal);
-    closeReportModalBtn.addEventListener('click', closeModal);
-
-    copyTakedownBtn.addEventListener('click', () => {
-      const text = document.getElementById('takedownReportText').value;
-      navigator.clipboard.writeText(text).then(() => {
-        showToast('Takedown report copied to clipboard!', 'success');
-      });
-    });
-
-    submitIncidentBtn.addEventListener('click', async () => {
-      const confirmCheck = document.getElementById('confirmVerificationCheck').checked;
-      if (!confirmCheck) {
-        showToast('Please confirm the verification checkbox before submitting.', 'error');
-        return;
-      }
-
-      if (!currentReport) return;
-
-      const payload = {
-        sha256_hash: currentReport.report.sha256_hash,
-        source_identifier: currentReport.pipeline_telemetry.original_filename || currentReport.report.sha256_hash.substring(0, 12),
-        manipulation_type: currentReport.report.verdict,
-        takedown_report_text: document.getElementById('takedownReportText').value,
-        investigator_notes: document.getElementById('investigatorNotes').value.trim() || null,
-        platform: "Instagram"
-      };
-
-      try {
-        const res = await fetch('/incidents/report', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
-        });
-
-        const record = await res.json();
-        if (res.ok) {
-          document.getElementById('assignedTicketId').textContent = record.ticket_id;
-          document.getElementById('incidentResultBanner').classList.remove('hidden');
-          showToast(`Report logged! Ticket: ${record.ticket_id}`, 'success');
-          loadIncidentsCount();
-        } else {
-          showToast(record.detail || 'Failed submitting report', 'error');
-        }
-      } catch (err) {
-        showToast(`Submission error: ${err.message}`, 'error');
-      }
-    });
-
-    // Reported Incidents Log Modal
-    const incidentsModal = document.getElementById('incidentsModal');
-    const openIncidentsBtn = document.getElementById('openIncidentsBtn');
-    const closeIncidentsModalBtn = document.getElementById('closeIncidentsModalBtn');
-
-    openIncidentsBtn.addEventListener('click', () => {
-      incidentsModal.classList.remove('hidden');
-      loadIncidentsList();
-    });
-
-    closeIncidentsModalBtn.addEventListener('click', () => {
-      incidentsModal.classList.add('hidden');
-    });
-
-    async function loadIncidentsList() {
-      const container = document.getElementById('incidentsListContainer');
-      try {
-        const res = await fetch('/incidents');
-        const list = await res.json();
-        if (list.length === 0) {
-          container.innerHTML = `<p class="text-xs text-slate-500 py-6 text-center">No deepfake incidents logged yet.</p>`;
-          return;
-        }
-
-        container.innerHTML = list.map(item => `
-          <div class="bg-dark-850 p-4 rounded-xl border border-slate-800 space-y-2 text-xs">
-            <div class="flex items-center justify-between">
-              <span class="font-mono font-bold text-rose-400 text-sm">${item.ticket_id}</span>
-              <span class="text-[10px] text-slate-400">${new Date(item.timestamp).toLocaleString()}</span>
-            </div>
-            <p class="text-slate-200"><strong>Target:</strong> ${item.source_identifier}</p>
-            <p class="text-slate-400 font-mono text-[11px] truncate">SHA-256: ${item.sha256_hash}</p>
-            <div class="flex items-center justify-between pt-1">
-              <span class="px-2 py-0.5 rounded bg-rose-500/20 text-rose-300 font-semibold text-[10px] uppercase">${item.manipulation_type}</span>
-              <span class="text-[11px] text-emerald-400">${item.status}</span>
-            </div>
-          </div>
-        `).join('');
-      } catch (err) {
-        container.innerHTML = `<p class="text-xs text-rose-400 py-4 text-center">Failed loading records: ${err.message}</p>`;
-      }
-    }
-
-    async function loadIncidentsCount() {
-      try {
-        const res = await fetch('/incidents');
-        const list = await res.json();
-        document.getElementById('incidentsCountBadge').textContent = list.length;
-      } catch (e) {}
-    }
-    loadIncidentsCount();
-
-    // Export PDF
-    document.getElementById('exportPdfBtn').addEventListener('click', () => {
-      window.print();
-    });
-
-    // Download JSON
-    document.getElementById('downloadJsonBtn').addEventListener('click', () => {
-      if (!currentReport) return;
-      const jsonStr = JSON.stringify(currentReport, null, 2);
-      const blob = new Blob([jsonStr], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `truthlens_report_${currentReport.report.sha256_hash.substring(0, 10)}.json`;
-      a.click();
-    });
-
-    // History in localStorage
-    function saveToHistory(report, telemetry) {
-      scanHistory = scanHistory.filter(h => h.hash !== report.sha256_hash);
-      scanHistory.unshift({
-        hash: report.sha256_hash,
-        verdict: report.verdict,
-        score: report.deepfake_probability,
-        media_type: telemetry.media_type,
-        timestamp: new Date().toISOString()
-      });
-      if (scanHistory.length > 10) scanHistory.pop();
-      localStorage.setItem('truthlens_history', JSON.stringify(scanHistory));
-    }
-
-    document.getElementById('openHistoryBtn').addEventListener('click', () => {
-      if (scanHistory.length === 0) {
-        showToast('No scan history found yet.', 'info');
-        return;
-      }
-      incidentsModal.classList.remove('hidden');
-      const container = document.getElementById('incidentsListContainer');
-      container.innerHTML = `
-        <h4 class="text-xs font-bold uppercase tracking-wider text-cyan-400 mb-2">Recent Scans (Local History)</h4>
-        ${scanHistory.map(h => `
-          <div class="bg-dark-850 p-3.5 rounded-xl border border-slate-800 flex items-center justify-between text-xs cursor-pointer hover:border-cyan-500/50 transition" onclick="loadCachedReport('${h.hash}')">
-            <div>
-              <p class="font-mono text-cyan-400 font-semibold truncate max-w-xs">${h.hash}</p>
-              <p class="text-[10px] text-slate-400">${new Date(h.timestamp).toLocaleString()} &bull; ${h.media_type || 'MEDIA'}</p>
-            </div>
-            <span class="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-slate-800 text-slate-300 border border-slate-700">${h.verdict} (${(h.score * 100).toFixed(0)}%)</span>
-          </div>
-        `).join('')}
-      `;
-    });
-
-    async function loadCachedReport(hash) {
-      incidentsModal.classList.add('hidden');
-      try {
-        const res = await fetch(`/reports/${hash}`);
-        if (!res.ok) {
-          showToast('Failed retrieving cached report.', 'error');
-          return;
-        }
-        const report = await res.json();
-        // Construct mock full analysis response structure
-        renderForensicReport({
-          success: true,
-          report: report,
-          artifacts: {
-            ela_heatmap: `/artifacts/${hash}/ela_heatmap.png`,
-            audio_wav: `/artifacts/${hash}/audio_16k_mono.wav`,
-            flagged_frames: [],
-            face_crops: []
-          },
-          pipeline_telemetry: {
-            sha256_hash: hash,
-            duration_seconds: 0.0,
-            media_type: "cached"
-          }
-        });
-      } catch (e) {
-        showToast('Error loading report', 'error');
-      }
-    }
-
-    // Copy full SHA256 button
-    document.getElementById('copyHashBtn').addEventListener('click', () => {
-      if (currentReport && currentReport.report) {
-        navigator.clipboard.writeText(currentReport.report.sha256_hash).then(() => {
-          showToast('Full SHA-256 copied to clipboard!', 'success');
-        });
-      }
-    });
-  </script>
+  <!-- Main Application Script -->
+  <script src="/static/forensics_viz.js"></script>
+  <script src="/static/app.js"></script>
 </body>
 </html>

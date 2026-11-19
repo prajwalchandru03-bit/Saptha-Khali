@@ -60,6 +60,7 @@ class AudioForensicsResult:
     average_voice_clone_score: float
     peak_voice_clone_score: float
     is_flagged_voice_clone: bool
+    median_voice_clone_score: float = 0.0
     speech_chunks_analyzed: int = 0
     silent_chunks_skipped: int = 0
     synthetic_voice_spikes: List[Dict[str, Union[float, str]]] = field(default_factory=list)
@@ -142,20 +143,32 @@ class Wav2Vec2DeepfakeDetector:
         if isinstance(probs, float):
             probs = [1.0 - probs, probs]
 
-        id2label = getattr(self.model.config, "id2label", {0: "real", 1: "fake"})
+        id2label = getattr(self.model.config, "id2label", {})
         fake_prob = 0.0
         real_prob = 0.0
+        found_fake = False
+        found_real = False
+
+        fake_keywords = ("spoof", "fake", "synthetic", "clone", "deepfake", "artificial")
+        real_keywords = ("bonafide", "real", "genuine", "authentic", "human")
 
         for idx, prob in enumerate(probs):
             lbl = str(id2label.get(idx, f"label_{idx}")).lower()
-            if "fake" in lbl or "spoof" in lbl or "synthetic" in lbl or "clone" in lbl:
+            if any(k in lbl for k in fake_keywords):
                 fake_prob = float(prob)
-            elif "real" in lbl or "bonafide" in lbl or "genuine" in lbl:
+                found_fake = True
+            elif any(k in lbl for k in real_keywords):
                 real_prob = float(prob)
+                found_real = True
 
-        if fake_prob == 0.0 and real_prob == 0.0 and len(probs) >= 2:
+        if not found_fake and not found_real and len(probs) >= 2:
+            # HyperMoon: {0: 'bonafide', 1: 'spoof'} -> index 1 is spoof (fake), index 0 is bonafide (real)
             fake_prob = float(probs[1])
             real_prob = float(probs[0])
+        elif found_fake and not found_real:
+            real_prob = 1.0 - fake_prob
+        elif found_real and not found_fake:
+            fake_prob = 1.0 - real_prob
 
         predicted_label = "Deepfake / Voice Clone" if fake_prob > real_prob else "Authentic Voice"
         return round(fake_prob, 4), round(real_prob, 4), predicted_label
@@ -470,7 +483,22 @@ class AudioAnalyzer:
 
         if active_fake_scores:
             avg_fake = float(np.mean(active_fake_scores))
+            median_fake = float(np.median(active_fake_scores))
             peak_fake = float(max(active_fake_scores))
+
+            # If background music / ambient interference is present, wav2vec2-deepfake is prone to
+            # false positives because acoustic artifacts resemble voice synthesis artifacts.
+            # We dampen the score and cap it to <= 0.35 unless the median is overwhelmingly synthetic (> 0.85).
+            if music_detected:
+                if median_fake < 0.85:
+                    median_fake = min(median_fake * 0.45, 0.35)
+                    avg_fake = min(avg_fake * 0.45, 0.35)
+                logger.info(
+                    "Background music detected; calibrated wav2vec2 clone scores "
+                    "(median: %.4f, avg: %.4f, peak: %.4f)",
+                    median_fake, avg_fake, peak_fake
+                )
+
             sorted_flagged = sorted(
                 [c for c in chunk_results if c.is_speech and c.fake_score > 0.45],
                 key=lambda x: x.fake_score,
@@ -479,10 +507,16 @@ class AudioAnalyzer:
             top_flagged = sorted_flagged[:5]
         else:
             avg_fake = 0.0
+            median_fake = 0.0
             peak_fake = 0.0
             top_flagged = []
 
-        is_flagged = avg_fake >= 0.50 or peak_fake >= 0.70
+        # Flag voice clone only if median score is sustained high (>= 0.55) or consistent high avg/peak
+        # without music interference
+        if music_detected:
+            is_flagged = median_fake >= 0.70
+        else:
+            is_flagged = median_fake >= 0.55 or (avg_fake >= 0.50 and peak_fake >= 0.80)
 
         # Whisper speech transcription
         full_transcript, language, segments = self.transcriber.transcribe(audio_path)
@@ -491,6 +525,7 @@ class AudioAnalyzer:
             has_audio=True,
             duration_seconds=round(duration, 2),
             average_voice_clone_score=round(avg_fake, 4),
+            median_voice_clone_score=round(median_fake, 4),
             peak_voice_clone_score=round(peak_fake, 4),
             is_flagged_voice_clone=is_flagged,
             speech_chunks_analyzed=speech_chunks,
